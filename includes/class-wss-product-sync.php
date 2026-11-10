@@ -711,6 +711,12 @@ class WSS_Product_Sync
             if (!is_wp_error($shipping_price) && $shipping_price !== null) {
                 $variant_payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
             }
+            
+            // Only include fields that Shopier expects (filter out vatPercent and other read-only fields)
+            $variant_payload['priceData'] = array_intersect_key(
+                $variant_payload['priceData'],
+                array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
+            );
 
             if ($variation->managing_stock()) {
                 $quantity = self::get_integer_stock_quantity($variation);
@@ -1117,6 +1123,8 @@ class WSS_Product_Sync
             return null;
         }
 
+        // Try to find the shipping cost in the first available zone/method
+        // Most sites have a single zone with one method
         foreach ($zones as $zone) {
             if (!is_array($zone) || empty($zone['zone_id'])) {
                 continue;
@@ -1132,6 +1140,7 @@ class WSS_Product_Sync
                 continue;
             }
 
+            // Return cost from first method that has this shipping class
             foreach ($methods as $method) {
                 if (!is_object($method) || !isset($method->instance_settings)) {
                     continue;
@@ -1147,6 +1156,8 @@ class WSS_Product_Sync
                     }
                 }
             }
+            // Don't iterate other zones if we found one with methods
+            break;
         }
 
         return null;
