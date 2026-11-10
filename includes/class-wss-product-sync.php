@@ -1276,8 +1276,17 @@ class WSS_Product_Sync
                 );
                 return false;
             }
+            // Media verification: only check type and placement, not URL (Shopier changes URL to CDN)
             foreach ($payload['media'] as $index => $media) {
-                if (!self::matches_array_fields($body['media'][$index] ?? null, $media)) {
+                $body_media = $body['media'][$index] ?? null;
+                if (!is_array($body_media)) {
+                    return false;
+                }
+                // Only check type and placement; URL will differ (CDN upload)
+                if (
+                    ($media['type'] ?? '') !== ($body_media['type'] ?? '') ||
+                    ($media['placement'] ?? 0) !== ($body_media['placement'] ?? 0)
+                ) {
                     WSS_Logger::log(
                         'shopier-api',
                         'Media item mismatch during verification',
@@ -1285,8 +1294,10 @@ class WSS_Product_Sync
                         [
                             'event' => 'media_item_mismatch',
                             'media_index' => $index,
-                            'body_media_item' => self::format_log_value($body['media'][$index] ?? null),
-                            'payload_media_item' => self::format_log_value($media),
+                            'body_media_type' => (string) ($body_media['type'] ?? ''),
+                            'payload_media_type' => (string) ($media['type'] ?? ''),
+                            'body_media_placement' => (int) ($body_media['placement'] ?? 0),
+                            'payload_media_placement' => (int) ($media['placement'] ?? 0),
                         ]
                     );
                     return false;
