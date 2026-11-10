@@ -269,6 +269,9 @@ class WSS_Logger
             'expected_media_placement',
             'actual_primary',
             'expected_primary',
+            'http_status',
+            'response_body',
+            'response_message',
         ];
 
         $safe_context = array_intersect_key(

@@ -833,6 +833,21 @@ class WSS_Product_Sync
             $response = WSS_Shopier_API::update_product($shopier_product_id, $payload);
             if (empty($response['success'])) {
                 $status = absint($response['status'] ?? 0);
+                
+                // Log error response for debugging
+                WSS_Logger::log(
+                    'shopier-api',
+                    'Product update failed',
+                    'ERROR',
+                    [
+                        'event' => 'product_update_failed',
+                        'reference_id' => (string) $shopier_product_id,
+                        'http_status' => $status,
+                        'response_body' => self::format_log_value($response['body'] ?? null),
+                        'response_message' => (string) ($response['message'] ?? ''),
+                    ]
+                );
+                
                 return new WP_Error(
                     'wss_shopier_product_update_failed',
                     $status > 0
