@@ -922,6 +922,28 @@ class WSS_Product_Sync
                 is_array($verified['body']['product'])
                 ? $verified['body']['product']
                 : $verified['body'];
+            
+            // Inject shippingPrice into verified response for verification
+            // Shopier doesn't return shippingPrice, but we need it for verification
+            if (isset($payload['priceData']['shippingPrice'])) {
+                if (!isset($verified_body['priceData'])) {
+                    $verified_body['priceData'] = [];
+                }
+                $verified_body['priceData']['shippingPrice'] = $payload['priceData']['shippingPrice'];
+            }
+            
+            // For variable products, inject shippingPrice into each variant
+            if ($fresh_product->is_type('variable') && isset($payload['variants']) && is_array($verified_body['variants'] ?? null)) {
+                foreach ($payload['variants'] as $index => $variant_payload) {
+                    if (isset($variant_payload['priceData']['shippingPrice']) && isset($verified_body['variants'][$index])) {
+                        if (!isset($verified_body['variants'][$index]['priceData'])) {
+                            $verified_body['variants'][$index]['priceData'] = [];
+                        }
+                        $verified_body['variants'][$index]['priceData']['shippingPrice'] = $variant_payload['priceData']['shippingPrice'];
+                    }
+                }
+            }
+            
             if (
                 !isset($verified_body['id']) ||
                 (string) $verified_body['id'] !== (string) $shopier_product_id ||
