@@ -114,15 +114,25 @@ class WSS_Shopier_API
             $args['headers']['Content-Type'] = 'application/json';
             $args['body'] = $encoded_payload;
             
-            // Log payload for debugging large payloads
+            // Log payload for debugging
+            require_once __DIR__ . '/class-wss-logger.php';
             if (strlen($encoded_payload) > 10000) {
-                require_once __DIR__ . '/class-wss-logger.php';
                 WSS_Logger::log('shopier-api', 'Large payload being sent', 'DEBUG', [
                     'event' => 'large_payload',
                     'method' => $method,
                     'endpoint' => $url,
                     'payload_size' => strlen($encoded_payload),
                 ]);
+            }
+            // Log full payload on errors (will be checked after response)
+            if ($method === 'PUT') {
+                // Store payload for verification logging if needed
+                // This is used to cross-reference error responses
+                $GLOBALS['wss_last_payload'] = [
+                    'method' => $method,
+                    'endpoint' => $url,
+                    'payload' => $payload,
+                ];
             }
         }
 
