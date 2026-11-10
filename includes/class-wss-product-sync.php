@@ -1469,8 +1469,8 @@ class WSS_Product_Sync
         ) {
             WSS_Logger::log(
                 'shopier-api',
-                'Variant priceData mismatch',
-                'DEBUG',
+                'Variant priceData mismatch during verification',
+                'ERROR',
                 [
                     'event' => 'variant_priceData_mismatch',
                     'actual_priceData' => self::format_log_value($actual['priceData'] ?? null),
