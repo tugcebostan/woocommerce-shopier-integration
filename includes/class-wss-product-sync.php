@@ -909,13 +909,29 @@ class WSS_Product_Sync
                         );
                     }
                     $expected_variant = $payload['variants'][$index] ?? [];
-                    if (
-                        empty($expected_variant) ||
-                        !self::matches_variant_payload(
-                            $verified_catalog[$signature],
-                            $expected_variant
-                        )
-                    ) {
+                    $matches = !empty($expected_variant) && self::matches_variant_payload(
+                        $verified_catalog[$signature],
+                        $expected_variant
+                    );
+
+                    // Debug log to understand mismatch
+                    WSS_Logger::log(
+                        'shopier-api',
+                        'Variation verification result',
+                        'INFO',
+                        [
+                            'event' => 'variation_verification_check',
+                            'reference_id' => (string) $shopier_product_id,
+                            'variant_index' => $index,
+                            'selection_signature' => $signature,
+                            'expected_variant_empty' => empty($expected_variant) ? 'true' : 'false',
+                            'matches_result' => $matches ? 'true' : 'false',
+                            'body_variant' => self::format_log_value($verified_catalog[$signature]),
+                            'payload_variant' => self::format_log_value($expected_variant),
+                        ]
+                    );
+
+                    if (!$matches) {
                         return new WP_Error(
                             'wss_shopier_variation_update_verification_failed',
                             'Shopier variation data did not match the requested prices or stock after update.'
@@ -1311,32 +1327,115 @@ class WSS_Product_Sync
     private static function matches_variant_payload($actual, $expected)
     {
         if (!is_array($actual) || !is_array($expected)) {
+            WSS_Logger::log(
+                'shopier-api',
+                'Variant payload type check failed',
+                'DEBUG',
+                [
+                    'event' => 'variant_type_mismatch',
+                    'actual_type' => gettype($actual),
+                    'expected_type' => gettype($expected),
+                ]
+            );
             return false;
         }
         if (
             array_values((array) ($actual['selectionId'] ?? [])) !==
             array_values((array) ($expected['selectionId'] ?? []))
         ) {
+            WSS_Logger::log(
+                'shopier-api',
+                'Variant selectionId mismatch',
+                'DEBUG',
+                [
+                    'event' => 'variant_selectionId_mismatch',
+                    'actual_selectionId' => self::format_log_value($actual['selectionId'] ?? null),
+                    'expected_selectionId' => self::format_log_value($expected['selectionId'] ?? null),
+                ]
+            );
             return false;
         }
         if (
             isset($expected['priceData']) &&
             !self::matches_array_fields($actual['priceData'] ?? null, $expected['priceData'])
         ) {
+            WSS_Logger::log(
+                'shopier-api',
+                'Variant priceData mismatch',
+                'DEBUG',
+                [
+                    'event' => 'variant_priceData_mismatch',
+                    'actual_priceData' => self::format_log_value($actual['priceData'] ?? null),
+                    'expected_priceData' => self::format_log_value($expected['priceData'] ?? null),
+                ]
+            );
             return false;
         }
         if (
             array_key_exists('stockQuantity', $expected) &&
             (int) ($actual['stockQuantity'] ?? -1) !== (int) $expected['stockQuantity']
         ) {
+            WSS_Logger::log(
+                'shopier-api',
+                'Variant stockQuantity mismatch',
+                'DEBUG',
+                [
+                    'event' => 'variant_stockQuantity_mismatch',
+                    'actual_stockQuantity' => (int) ($actual['stockQuantity'] ?? -1),
+                    'expected_stockQuantity' => (int) $expected['stockQuantity'],
+                ]
+            );
             return false;
         }
         if (isset($expected['media'])) {
             if (!isset($actual['media']) || !is_array($actual['media']) || count($actual['media']) !== count($expected['media'])) {
+                WSS_Logger::log(
+                    'shopier-api',
+                    'Variant media count or type mismatch',
+                    'DEBUG',
+                    [
+                        'event' => 'variant_media_count_mismatch',
+                        'actual_media_exists' => isset($actual['media']) ? 'true' : 'false',
+                        'actual_media_is_array' => is_array($actual['media'] ?? null) ? 'true' : 'false',
+                        'actual_media_count' => is_array($actual['media'] ?? null) ? count($actual['media']) : 'N/A',
+                        'expected_media_count' => count($expected['media']),
+                    ]
+                );
                 return false;
             }
+            // Media verification: only check type and placement, not URL (Shopier changes URL to CDN)
             foreach ($expected['media'] as $index => $media) {
-                if (!self::matches_array_fields($actual['media'][$index] ?? null, $media)) {
+                $body_media = $actual['media'][$index] ?? null;
+                if (!is_array($body_media)) {
+                    WSS_Logger::log(
+                        'shopier-api',
+                        'Variant media item not array',
+                        'DEBUG',
+                        [
+                            'event' => 'variant_media_item_not_array',
+                            'media_index' => $index,
+                            'actual_type' => gettype($body_media),
+                        ]
+                    );
+                    return false;
+                }
+                if (
+                    ($media['type'] ?? '') !== ($body_media['type'] ?? '') ||
+                    ($media['placement'] ?? 0) !== ($body_media['placement'] ?? 0)
+                ) {
+                    WSS_Logger::log(
+                        'shopier-api',
+                        'Variant media type/placement mismatch',
+                        'DEBUG',
+                        [
+                            'event' => 'variant_media_mismatch',
+                            'media_index' => $index,
+                            'body_media_type' => (string) ($body_media['type'] ?? ''),
+                            'expected_media_type' => (string) ($media['type'] ?? ''),
+                            'body_media_placement' => (int) ($body_media['placement'] ?? 0),
+                            'expected_media_placement' => (int) ($media['placement'] ?? 0),
+                        ]
+                    );
                     return false;
                 }
             }
@@ -1345,6 +1444,16 @@ class WSS_Product_Sync
             array_key_exists('primary', $expected) &&
             (bool) ($actual['primary'] ?? false) !== (bool) $expected['primary']
         ) {
+            WSS_Logger::log(
+                'shopier-api',
+                'Variant primary mismatch',
+                'DEBUG',
+                [
+                    'event' => 'variant_primary_mismatch',
+                    'actual_primary' => (bool) ($actual['primary'] ?? false) ? 'true' : 'false',
+                    'expected_primary' => (bool) $expected['primary'] ? 'true' : 'false',
+                ]
+            );
             return false;
         }
 
