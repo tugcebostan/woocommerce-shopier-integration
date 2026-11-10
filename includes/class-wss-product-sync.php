@@ -623,11 +623,17 @@ class WSS_Product_Sync
             // Always use TRY for Shopier
             $price_result['currency'] = 'TRY';
             
-            // Only include fields that Shopier expects: currency, price, discount, discountedPrice
-            // Remove vatPercent (validation errors) and shippingPrice (read-only, Shopier doesn't return it)
+            // Add shipping price from WooCommerce Shipping Zones
+            $shipping_price = self::get_product_shipping_price($product);
+            if (!is_wp_error($shipping_price) && $shipping_price !== null) {
+                $price_result['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+            }
+            
+            // Only include fields that Shopier expects
+            // Note: shippingPrice is sent but not verified (Shopier doesn't return it)
             $price_result = array_intersect_key(
                 $price_result,
-                array_flip(['currency', 'price', 'discount', 'discountedPrice'])
+                array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
             );
             
             $payload['priceData'] = $price_result;
