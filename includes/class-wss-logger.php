@@ -272,6 +272,8 @@ class WSS_Logger
             'http_status',
             'response_body',
             'response_message',
+            'payload_size',
+            'method',
         ];
 
         $safe_context = array_intersect_key(
