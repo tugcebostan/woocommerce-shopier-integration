@@ -1580,8 +1580,10 @@ class WSS_Product_Sync
             return false;
         }
         foreach ($expected as $key => $value) {
-            // Skip vatPercent (read-only validation field, Shopier doesn't return it)
-            if ($key === 'vatPercent') {
+            // Skip read-only fields that Shopier doesn't return or returns at different level
+            // vatPercent: read-only validation field
+            // shippingPrice: in variants, Shopier returns at root level only (not in variant priceData)
+            if (in_array($key, ['vatPercent', 'shippingPrice'], true)) {
                 continue;
             }
             
