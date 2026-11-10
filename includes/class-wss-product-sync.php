@@ -630,7 +630,7 @@ class WSS_Product_Sync
             }
             
             // Only include fields that Shopier expects
-            // Note: shippingPrice is sent but not verified (Shopier doesn't return it)
+            // shippingPrice is sent and will be verified against Shopier response
             $price_result = array_intersect_key(
                 $price_result,
                 array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
@@ -1081,6 +1081,58 @@ class WSS_Product_Sync
         return (int) $quantity;
     }
 
+    private static function get_product_shipping_price($product)
+    {
+        if (!$product || !is_object($product)) {
+            return null;
+        }
+
+        $shipping_class_id = $product->get_shipping_class_id();
+        if (empty($shipping_class_id)) {
+            return null;
+        }
+
+        // Get all shipping zones
+        $zones = WC_Shipping_Zones::get_zones();
+        if (empty($zones)) {
+            return null;
+        }
+
+        foreach ($zones as $zone) {
+            if (!is_array($zone) || empty($zone['zone_id'])) {
+                continue;
+            }
+
+            $zone_obj = WC_Shipping_Zones::get_zone($zone['zone_id']);
+            if (!$zone_obj || !is_object($zone_obj)) {
+                continue;
+            }
+
+            $methods = $zone_obj->get_shipping_methods();
+            if (empty($methods)) {
+                continue;
+            }
+
+            foreach ($methods as $method) {
+                if (!is_object($method) || !isset($method->instance_settings)) {
+                    continue;
+                }
+
+                $settings = $method->instance_settings;
+                $class_cost_key = 'class_cost_' . $shipping_class_id;
+
+                if (!empty($settings[$class_cost_key])) {
+                    $cost = (float) $settings[$class_cost_key];
+                    if ($cost > 0) {
+                        return $cost;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static function get_product_media($product)
     {
         $image_ids = array_slice(array_values(array_unique(array_filter(array_merge(
@@ -1492,8 +1544,8 @@ class WSS_Product_Sync
             return false;
         }
         foreach ($expected as $key => $value) {
-            // Skip read-only fields that Shopier doesn't return (shippingPrice, vatPercent, etc.)
-            if (in_array($key, ['shippingPrice', 'vatPercent'], true)) {
+            // Skip vatPercent (read-only validation field, Shopier doesn't return it)
+            if ($key === 'vatPercent') {
                 continue;
             }
             
