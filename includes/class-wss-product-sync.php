@@ -769,12 +769,20 @@ class WSS_Product_Sync
             }
         }
         
-        // Add root level stockQuantity if product has stock management
-        if ($product->managing_stock()) {
-            $quantity = self::get_integer_stock_quantity($product);
-            if (!is_wp_error($quantity)) {
-                $payload['stockQuantity'] = $quantity;
+        // Add root level stockQuantity as sum of all variant stocks
+        $total_stock = 0;
+        $variation_ids = $product->get_children();
+        foreach ($variation_ids as $variation_id) {
+            $variation = wc_get_product($variation_id);
+            if ($variation) {
+                $variant_stock = $variation->get_stock_quantity();
+                if ($variant_stock !== null && is_numeric($variant_stock)) {
+                    $total_stock += (int) $variant_stock;
+                }
             }
+        }
+        if ($total_stock > 0) {
+            $payload['stockQuantity'] = $total_stock;
         }
         
         return $payload;
