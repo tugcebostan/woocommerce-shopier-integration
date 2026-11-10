@@ -924,15 +924,17 @@ class WSS_Product_Sync
                 : $verified['body'];
             
             // For variable products, Shopier doesn't return shippingPrice in variant priceData
-            // Inject the sent shippingPrice into each variant for verification
-            if ($fresh_product->is_type('variable') && isset($payload['variants']) && is_array($verified_body['variants'] ?? null)) {
-                foreach ($payload['variants'] as $index => $variant_payload) {
-                    if (isset($variant_payload['priceData']['shippingPrice']) && isset($verified_body['variants'][$index])) {
-                        if (!isset($verified_body['variants'][$index]['priceData'])) {
-                            $verified_body['variants'][$index]['priceData'] = [];
+            // Copy root level shippingPrice to each variant for verification
+            if ($fresh_product->is_type('variable') && is_array($verified_body['variants'] ?? null)) {
+                $root_shipping_price = $verified_body['priceData']['shippingPrice'] ?? null;
+                if ($root_shipping_price !== null) {
+                    foreach ($verified_body['variants'] as &$variant) {
+                        if (!isset($variant['priceData'])) {
+                            $variant['priceData'] = [];
                         }
-                        $verified_body['variants'][$index]['priceData']['shippingPrice'] = $variant_payload['priceData']['shippingPrice'];
+                        $variant['priceData']['shippingPrice'] = $root_shipping_price;
                     }
+                    unset($variant);
                 }
             }
             
