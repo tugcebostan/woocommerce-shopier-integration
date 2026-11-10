@@ -616,6 +616,8 @@ class WSS_Product_Sync
             $price_data = isset($remote_body['priceData']) && is_array($remote_body['priceData'])
                 ? $remote_body['priceData']
                 : [];
+            // Remove read-only fields that Shopier returns but won't accept in updates
+            unset($price_data['vatPercent']);
             $price_result = self::apply_product_price($price_data, $product);
             if (is_wp_error($price_result)) {
                 return $price_result;
