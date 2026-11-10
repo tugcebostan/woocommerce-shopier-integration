@@ -706,16 +706,10 @@ class WSS_Product_Sync
                 'price' => wc_format_decimal($price, wc_get_price_decimals()),
             ];
             
-            // Add shipping price from WooCommerce Shipping Zones
-            $shipping_price = self::get_product_shipping_price($variation);
-            if (!is_wp_error($shipping_price) && $shipping_price !== null) {
-                $variant_payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
-            }
-            
             // Only include fields that Shopier expects (filter out vatPercent and other read-only fields)
             $variant_payload['priceData'] = array_intersect_key(
                 $variant_payload['priceData'],
-                array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
+                array_flip(['currency', 'price', 'discount', 'discountedPrice'])
             );
 
             if ($variation->managing_stock()) {
@@ -759,6 +753,17 @@ class WSS_Product_Sync
         }
 
         $payload['variants'] = $variants;
+        
+        // Add shipping price at root level for variable products
+        // Shopier stores shippingPrice once for the whole product, not per variant
+        $shipping_price = self::get_product_shipping_price($product);
+        if (!is_wp_error($shipping_price) && $shipping_price !== null) {
+            if (!isset($payload['priceData'])) {
+                $payload['priceData'] = ['currency' => $currency];
+            }
+            $payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+        }
+        
         return $payload;
     }
 
@@ -922,21 +927,6 @@ class WSS_Product_Sync
                 is_array($verified['body']['product'])
                 ? $verified['body']['product']
                 : $verified['body'];
-            
-            // For variable products, Shopier doesn't return shippingPrice in variant priceData
-            // Copy root level shippingPrice to each variant for verification
-            if ($fresh_product->is_type('variable') && is_array($verified_body['variants'] ?? null)) {
-                $root_shipping_price = $verified_body['priceData']['shippingPrice'] ?? null;
-                if ($root_shipping_price !== null) {
-                    foreach ($verified_body['variants'] as &$variant) {
-                        if (!isset($variant['priceData'])) {
-                            $variant['priceData'] = [];
-                        }
-                        $variant['priceData']['shippingPrice'] = $root_shipping_price;
-                    }
-                    unset($variant);
-                }
-            }
             
             if (
                 !isset($verified_body['id']) ||
