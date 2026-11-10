@@ -129,7 +129,16 @@ class WSS_Shopier_API
         
         // Log error responses for debugging
         if ($status >= 400) {
-            error_log('Shopier API Error (HTTP ' . $status . '): ' . wp_remote_retrieve_body($response));
+            $response_body = wp_remote_retrieve_body($response);
+            error_log('Shopier API Error (HTTP ' . $status . '): ' . $response_body);
+            
+            // Also log to plugin logger
+            require_once __DIR__ . '/class-wss-logger.php';
+            WSS_Logger::log('shopier-api', 'API request error', 'ERROR', [
+                'event' => 'api_request_error',
+                'http_status' => $status,
+                'response_body' => $response_body,
+            ]);
         }
 
         return [
