@@ -783,9 +783,8 @@ class WSS_Product_Sync
                 }
             }
         }
-        if ($total_stock > 0) {
-            $payload['stockQuantity'] = $total_stock;
-        }
+        // Always include stockQuantity (Shopier requires it)
+        $payload['stockQuantity'] = $total_stock;
         
         return $payload;
     }
