@@ -620,6 +620,8 @@ class WSS_Product_Sync
             if (is_wp_error($price_result)) {
                 return $price_result;
             }
+            // Always use TRY for Shopier
+            $price_result['currency'] = 'TRY';
             $payload['priceData'] = $price_result;
 
             if ($product->managing_stock()) {
@@ -642,13 +644,8 @@ class WSS_Product_Sync
             );
         }
 
-        $currency = get_woocommerce_currency();
-        if (!in_array($currency, ['TRY', 'USD', 'EUR'], true)) {
-            return new WP_Error(
-                'wss_product_currency_unsupported',
-                'Shopier variation updates support TRY, USD, and EUR only.'
-            );
-        }
+        // Always use TRY for Shopier - variations are stored in TRY regardless of site currency
+        $currency = 'TRY';
 
         $variants = [];
         foreach ($comparison['rows'] as $row) {
