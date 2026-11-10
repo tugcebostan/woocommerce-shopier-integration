@@ -232,6 +232,19 @@ class WSS_Logger
             'response_error',
             'request_body',
             'remote_value',
+            'job_id',
+            'item_id',
+            'wc_product_id',
+            'job_type',
+            'error_code',
+            'error_message',
+            'body_media_exists',
+            'body_media_is_array',
+            'body_media_count',
+            'payload_media_count',
+            'media_index',
+            'body_media_item',
+            'payload_media_item',
         ];
 
         $safe_context = array_intersect_key(
