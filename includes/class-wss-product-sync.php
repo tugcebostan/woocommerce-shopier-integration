@@ -625,9 +625,18 @@ class WSS_Product_Sync
             
             // Add shipping price from WooCommerce Shipping Zones
             $shipping_price = self::get_product_shipping_price($product);
+            WSS_Logger::log('product-sync', 'build_update_payload: shipping_price=' . var_export($shipping_price, true), 'DEBUG', [
+                'product_id' => $product->get_id(),
+                'shipping_class_id' => $product->get_shipping_class_id(),
+            ]);
+            
             if (!is_wp_error($shipping_price) && $shipping_price !== null) {
                 $price_result['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
             }
+            
+            WSS_Logger::log('product-sync', 'build_update_payload: price_result before filter=' . wp_json_encode($price_result), 'DEBUG', [
+                'product_id' => $product->get_id(),
+            ]);
             
             // Only include fields that Shopier expects
             // shippingPrice is sent and will be verified against Shopier response
@@ -635,6 +644,10 @@ class WSS_Product_Sync
                 $price_result,
                 array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
             );
+            
+            WSS_Logger::log('product-sync', 'build_update_payload: price_result after filter=' . wp_json_encode($price_result), 'DEBUG', [
+                'product_id' => $product->get_id(),
+            ]);
             
             $payload['priceData'] = $price_result;
 
@@ -692,6 +705,12 @@ class WSS_Product_Sync
                 'currency' => $currency,
                 'price' => wc_format_decimal($price, wc_get_price_decimals()),
             ];
+            
+            // Add shipping price from WooCommerce Shipping Zones
+            $shipping_price = self::get_product_shipping_price($variation);
+            if (!is_wp_error($shipping_price) && $shipping_price !== null) {
+                $variant_payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+            }
 
             if ($variation->managing_stock()) {
                 $quantity = self::get_integer_stock_quantity($variation);
