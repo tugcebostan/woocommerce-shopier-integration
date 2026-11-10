@@ -1262,10 +1262,33 @@ class WSS_Product_Sync
 
         if (isset($payload['media'])) {
             if (!isset($body['media']) || !is_array($body['media']) || count($body['media']) !== count($payload['media'])) {
+                WSS_Logger::log(
+                    'shopier-api',
+                    'Media mismatch during verification',
+                    'WARNING',
+                    [
+                        'event' => 'media_count_mismatch',
+                        'body_media_exists' => isset($body['media']),
+                        'body_media_is_array' => is_array($body['media'] ?? null),
+                        'body_media_count' => is_array($body['media'] ?? null) ? count($body['media']) : 0,
+                        'payload_media_count' => count($payload['media']),
+                    ]
+                );
                 return false;
             }
             foreach ($payload['media'] as $index => $media) {
                 if (!self::matches_array_fields($body['media'][$index] ?? null, $media)) {
+                    WSS_Logger::log(
+                        'shopier-api',
+                        'Media item mismatch during verification',
+                        'WARNING',
+                        [
+                            'event' => 'media_item_mismatch',
+                            'media_index' => $index,
+                            'body_media_item' => self::format_log_value($body['media'][$index] ?? null),
+                            'payload_media_item' => self::format_log_value($media),
+                        ]
+                    );
                     return false;
                 }
             }
