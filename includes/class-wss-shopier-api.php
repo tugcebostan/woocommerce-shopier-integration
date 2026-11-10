@@ -113,6 +113,17 @@ class WSS_Shopier_API
             }
             $args['headers']['Content-Type'] = 'application/json';
             $args['body'] = $encoded_payload;
+            
+            // Log payload for debugging large payloads
+            if (strlen($encoded_payload) > 10000) {
+                require_once __DIR__ . '/class-wss-logger.php';
+                WSS_Logger::log('shopier-api', 'Large payload being sent', 'DEBUG', [
+                    'event' => 'large_payload',
+                    'method' => $method,
+                    'endpoint' => $url,
+                    'payload_size' => strlen($encoded_payload),
+                ]);
+            }
         }
 
         $response = wp_remote_request($url, $args);
