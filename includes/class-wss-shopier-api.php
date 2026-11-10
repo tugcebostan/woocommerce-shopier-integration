@@ -126,6 +126,11 @@ class WSS_Shopier_API
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
         $status = wp_remote_retrieve_response_code($response);
+        
+        // Log error responses for debugging
+        if ($status >= 400) {
+            error_log('Shopier API Error (HTTP ' . $status . '): ' . wp_remote_retrieve_body($response));
+        }
 
         return [
             'success' => $status >= 200 && $status < 300,
