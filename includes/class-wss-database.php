@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 class WSS_Database
 {
-    const SCHEMA_VERSION = '1.1.0';
+    const SCHEMA_VERSION = '1.4.0';
 
     public static function init()
     {
@@ -81,6 +81,7 @@ class WSS_Database
         $tables[] = "CREATE TABLE {$prefix}sync_jobs (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             job_type varchar(50) NOT NULL,
+            job_data longtext DEFAULT NULL,
             status varchar(30) NOT NULL DEFAULT 'pending',
             total_items int(10) unsigned NOT NULL DEFAULT 0,
             processed_items int(10) unsigned NOT NULL DEFAULT 0,
@@ -142,16 +143,255 @@ class WSS_Database
             UNIQUE KEY wc_order_id (wc_order_id)
         ) $charset_collate;";
 
-        foreach ($tables as $sql) {
-            dbDelta($sql);
+        $installed_version = get_option('wss_db_version', '0');
+
+        if (version_compare($installed_version, '1.1.0', '<')) {
+            foreach ($tables as $sql) {
+                dbDelta($sql);
+            }
+
+            if (!self::migrate_to_110()) {
+                return;
+            }
         }
-        
-        // Yeni şemaya geçiş tamamlanmadan sürümü yükseltme.
-        if (!self::migrate_to_110()) {
+
+        if (
+            version_compare($installed_version, '1.2.0', '<') &&
+            !self::migrate_to_120()
+        ) {
+            return;
+        }
+
+        if (
+            version_compare($installed_version, '1.3.0', '<') &&
+            !self::migrate_to_130($tables)
+        ) {
+            return;
+        }
+
+        if (
+            version_compare($installed_version, '1.4.0', '<') &&
+            !self::migrate_to_140()
+        ) {
             return;
         }
         
         update_option('wss_db_version', self::SCHEMA_VERSION);
+    }
+
+    /**
+     * Add batch_id column to sync_job_items for parallel batch processing.
+     */
+    private static function migrate_to_140()
+    {
+        global $wpdb;
+
+        $items_table = $wpdb->prefix . 'wss_sync_job_items';
+        $column = $wpdb->get_var(
+            $wpdb->prepare(
+                "SHOW COLUMNS FROM `{$items_table}` LIKE %s",
+                'batch_id'
+            )
+        );
+
+        if ($column === 'batch_id') {
+            return true;
+        }
+
+        $result = $wpdb->query(
+            "ALTER TABLE `{$items_table}` ADD COLUMN batch_id int(10) unsigned NOT NULL DEFAULT 0 AFTER job_id"
+        );
+
+        if ($result === false) {
+            error_log('WSS migration 1.4.0 stopped: Could not add batch_id column to sync_job_items.');
+            return false;
+        }
+
+        return true;
+    }
+
+    private static function migrate_to_130($tables)
+    {
+        global $wpdb;
+
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+        if (
+            !isset($tables[3]) ||
+            dbDelta($tables[3]) === false
+        ) {
+            error_log('WSS migration 1.3.0 stopped: Could not add job data storage.');
+            return false;
+        }
+
+        $jobs_table = $wpdb->prefix . 'wss_sync_jobs';
+        $column = $wpdb->get_var(
+            $wpdb->prepare(
+                "SHOW COLUMNS FROM `{$jobs_table}` LIKE %s",
+                'job_data'
+            )
+        );
+
+        if ($column !== 'job_data') {
+            error_log('WSS migration 1.3.0 stopped: Job data column is missing.');
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Add a database-enforced uniqueness key for Shopier selection combinations.
+     */
+    private static function migrate_to_120()
+    {
+        global $wpdb;
+
+        $prefix = $wpdb->prefix . 'wss_';
+        $variation_table = $prefix . 'variation_map';
+        $items_table = $prefix . 'variation_map_items';
+        $attribute_table = $prefix . 'attribute_map';
+
+        foreach ([$variation_table, $items_table, $attribute_table] as $table) {
+            $exists = $wpdb->get_var(
+                $wpdb->prepare('SHOW TABLES LIKE %s', $table)
+            );
+
+            if ($exists !== $table) {
+                error_log("WSS migration 1.2.0: Table not found: {$table}");
+                return false;
+            }
+        }
+
+        $signature_exists = $wpdb->get_var(
+            $wpdb->prepare(
+                "SHOW COLUMNS FROM `{$variation_table}` LIKE %s",
+                'selection_signature'
+            )
+        );
+
+        if (!$signature_exists) {
+            $result = $wpdb->query(
+                "ALTER TABLE `{$variation_table}`
+                ADD COLUMN selection_signature CHAR(64) NOT NULL DEFAULT ''
+                AFTER shopier_product_id"
+            );
+
+            if ($result === false) {
+                error_log(
+                    'WSS migration 1.2.0: Could not add selection_signature. ' .
+                    $wpdb->last_error
+                );
+                return false;
+            }
+        }
+
+        $variations = $wpdb->get_results(
+            "SELECT id, shopier_product_id
+            FROM `{$variation_table}`
+            ORDER BY id ASC",
+            ARRAY_A
+        );
+
+        foreach ($variations as $variation) {
+            $pairs = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT a.shopier_group_id, a.shopier_selection_id
+                    FROM `{$items_table}` i
+                    INNER JOIN `{$attribute_table}` a
+                        ON a.id = i.attribute_map_id
+                    WHERE i.variation_map_id = %d",
+                    (int) $variation['id']
+                ),
+                ARRAY_A
+            );
+
+            if (empty($pairs)) {
+                error_log(
+                    'WSS migration 1.2.0 stopped: A variation mapping has no selection IDs.'
+                );
+                return false;
+            }
+
+            $groups = [];
+            $signature_parts = [];
+
+            foreach ($pairs as $pair) {
+                $group_id = (string) $pair['shopier_group_id'];
+                $selection_id = (string) $pair['shopier_selection_id'];
+
+                if ($group_id === '' || $selection_id === '' || isset($groups[$group_id])) {
+                    error_log(
+                        'WSS migration 1.2.0 stopped: Existing selection mapping is invalid.'
+                    );
+                    return false;
+                }
+
+                $groups[$group_id] = true;
+                $signature_parts[] = [$group_id, $selection_id];
+            }
+
+            usort($signature_parts, static function ($left, $right) {
+                return [$left[0], $left[1]] <=> [$right[0], $right[1]];
+            });
+
+            $signature = hash('sha256', wp_json_encode($signature_parts));
+            $updated = $wpdb->update(
+                $variation_table,
+                ['selection_signature' => $signature],
+                ['id' => (int) $variation['id']],
+                ['%s'],
+                ['%d']
+            );
+
+            if ($updated === false) {
+                error_log(
+                    'WSS migration 1.2.0: Could not backfill selection signature. ' .
+                    $wpdb->last_error
+                );
+                return false;
+            }
+        }
+
+        $duplicate_signature = $wpdb->get_var(
+            "SELECT shopier_product_id
+            FROM `{$variation_table}`
+            GROUP BY shopier_product_id, selection_signature
+            HAVING COUNT(*) > 1
+            LIMIT 1"
+        );
+
+        if ($duplicate_signature) {
+            error_log(
+                'WSS migration 1.2.0 stopped: Duplicate Shopier variation combinations require manual review.'
+            );
+            return false;
+        }
+
+        $index_exists = $wpdb->get_var(
+            $wpdb->prepare(
+                "SHOW INDEX FROM `{$variation_table}` WHERE Key_name = %s",
+                'shopier_selection_signature'
+            )
+        );
+
+        if (!$index_exists) {
+            $result = $wpdb->query(
+                "ALTER TABLE `{$variation_table}`
+                ADD UNIQUE KEY shopier_selection_signature
+                (shopier_product_id, selection_signature)"
+            );
+
+            if ($result === false) {
+                error_log(
+                    'WSS migration 1.2.0: Could not add selection signature index. ' .
+                    $wpdb->last_error
+                );
+                return false;
+            }
+        }
+
+        return true;
     }
 
 /**
