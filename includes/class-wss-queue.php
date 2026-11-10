@@ -500,6 +500,20 @@ class WSS_Queue
         $items_table = $wpdb->prefix . 'wss_sync_job_items';
         $jobs_table = $wpdb->prefix . 'wss_sync_jobs';
         $now = current_time('mysql');
+        
+        if (!$success) {
+            // Log error message to log file for debugging
+            WSS_Logger::log(
+                'shopier-sync-job',
+                'Job item error: ' . $message,
+                'ERROR',
+                [
+                    'job_id' => $job_id,
+                    'item_id' => $item_id,
+                ]
+            );
+        }
+        
         $wpdb->update(
             $items_table,
             [
