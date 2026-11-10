@@ -622,6 +622,14 @@ class WSS_Product_Sync
             }
             // Always use TRY for Shopier
             $price_result['currency'] = 'TRY';
+            
+            // Only include fields that Shopier expects: currency, price, discount, discountedPrice
+            // Remove any extra fields like vatPercent, shippingPrice that cause validation errors
+            $price_result = array_intersect_key(
+                $price_result,
+                array_flip(['currency', 'price', 'discount', 'discountedPrice'])
+            );
+            
             $payload['priceData'] = $price_result;
 
             if ($product->managing_stock()) {
