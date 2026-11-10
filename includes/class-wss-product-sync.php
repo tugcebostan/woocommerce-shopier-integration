@@ -476,6 +476,13 @@ class WSS_Product_Sync
                 return $price;
             }
             $price['currency'] = $currency;
+            
+            // Add shipping price from WooCommerce shipping class
+            $shipping_price = self::get_product_shipping_price($product->get_id());
+            if ($shipping_price > 0) {
+                $price['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+            }
+            
             $payload['priceData'] = $price;
 
             if ($product->managing_stock()) {
@@ -623,11 +630,17 @@ class WSS_Product_Sync
             // Always use TRY for Shopier
             $price_result['currency'] = 'TRY';
             
-            // Only include fields that Shopier expects: currency, price, discount, discountedPrice
-            // Remove any extra fields like vatPercent, shippingPrice that cause validation errors
+            // Add shipping price from WooCommerce shipping class
+            $shipping_price = self::get_product_shipping_price($product->get_id());
+            if ($shipping_price > 0) {
+                $price_result['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+            }
+            
+            // Only include fields that Shopier expects: currency, price, discount, discountedPrice, shippingPrice
+            // Remove any extra fields like vatPercent that cause validation errors
             $price_result = array_intersect_key(
                 $price_result,
-                array_flip(['currency', 'price', 'discount', 'discountedPrice'])
+                array_flip(['currency', 'price', 'discount', 'discountedPrice', 'shippingPrice'])
             );
             
             $payload['priceData'] = $price_result;
@@ -1150,6 +1163,33 @@ class WSS_Product_Sync
         }
 
         return (int) $value;
+    }
+
+    private static function get_product_shipping_price($product_id)
+    {
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            return 0;
+        }
+
+        $class_id = $product->get_shipping_class_id();
+        if (!$class_id) {
+            return 0;
+        }
+
+        $zones = WC_Shipping_Zones::get_zones();
+        foreach ($zones as $zone) {
+            $shipping_methods = $zone['shipping_methods'] ?? [];
+            foreach ($shipping_methods as $method) {
+                $settings = $method->instance_settings ?? [];
+                if (isset($settings['class_cost_' . $class_id])) {
+                    $cost = $settings['class_cost_' . $class_id];
+                    return is_numeric($cost) ? (float) $cost : 0;
+                }
+            }
+        }
+
+        return 0;
     }
 
     private static function format_log_value($value)
