@@ -754,14 +754,27 @@ class WSS_Product_Sync
 
         $payload['variants'] = $variants;
         
-        // Add shipping price at root level for variable products
-        // Shopier stores shippingPrice once for the whole product, not per variant
+        // Add shipping price and stock at root level for variable products
+        // Shopier stores these once for the whole product, not per variant
         $shipping_price = self::get_product_shipping_price($product);
         if (!is_wp_error($shipping_price) && $shipping_price !== null) {
             if (!isset($payload['priceData'])) {
-                $payload['priceData'] = ['currency' => $currency];
+                $payload['priceData'] = ['currency' => 'TRY'];
             }
             $payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+        } else {
+            // Set at least currency if no shipping price
+            if (!isset($payload['priceData'])) {
+                $payload['priceData'] = ['currency' => 'TRY'];
+            }
+        }
+        
+        // Add root level stockQuantity if product has stock management
+        if ($product->managing_stock()) {
+            $quantity = self::get_integer_stock_quantity($product);
+            if (!is_wp_error($quantity)) {
+                $payload['stockQuantity'] = $quantity;
+            }
         }
         
         return $payload;
