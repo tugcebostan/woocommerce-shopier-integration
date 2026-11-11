@@ -235,6 +235,8 @@ class WSS_Logger
             'job_id',
             'item_id',
             'wc_product_id',
+            'product_id',
+            'shopier_id',
             'job_type',
             'error_code',
             'error_message',
@@ -274,6 +276,8 @@ class WSS_Logger
             'response_message',
             'payload_size',
             'method',
+            'payload',
+            'response',
         ];
 
         $safe_context = array_intersect_key(

@@ -896,9 +896,35 @@ class WSS_Product_Sync
                 return $payload;
             }
 
+            // Debug: log the payload being sent
+            WSS_Logger::log(
+                'product-sync',
+                'Sending update payload to Shopier',
+                'DEBUG',
+                [
+                    'product_id' => $fresh_product->get_id(),
+                    'shopier_id' => $shopier_product_id,
+                    'payload' => json_encode($payload),
+                ]
+            );
+
             $response = WSS_Shopier_API::update_product($shopier_product_id, $payload);
             if (empty($response['success'])) {
                 $status = absint($response['status'] ?? 0);
+                
+                // Debug: log the error response
+                WSS_Logger::log(
+                    'shopier-api',
+                    'Update request failed - full response',
+                    'ERROR',
+                    [
+                        'event' => 'update_request_failed',
+                        'product_id' => $fresh_product->get_id(),
+                        'shopier_id' => $shopier_product_id,
+                        'http_status' => $status,
+                        'response' => json_encode($response),
+                    ]
+                );
                 
                 // Log error response for debugging
                 WSS_Logger::log(
