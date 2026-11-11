@@ -759,16 +759,24 @@ class WSS_Product_Sync
         // Add shipping price and stock at root level for variable products
         // Shopier stores these once for the whole product, not per variant
         $shipping_price = self::get_product_shipping_price($product);
+        
+        // Build root-level priceData with price (required by Shopier)
+        // Use the product's get_price() which returns the min variant price
+        $price = $product->get_price();
+        if ($price === '' || !is_numeric($price) || (float) $price < 0) {
+            return new WP_Error(
+                'wss_product_price_invalid',
+                'Variable product has no valid base price.'
+            );
+        }
+        
+        $payload['priceData'] = [
+            'currency' => 'TRY',
+            'price' => wc_format_decimal($price, wc_get_price_decimals()),
+        ];
+        
         if (!is_wp_error($shipping_price) && $shipping_price !== null) {
-            if (!isset($payload['priceData'])) {
-                $payload['priceData'] = ['currency' => 'TRY'];
-            }
             $payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
-        } else {
-            // Set at least currency if no shipping price
-            if (!isset($payload['priceData'])) {
-                $payload['priceData'] = ['currency' => 'TRY'];
-            }
         }
         
         // Add root level stockQuantity as sum of all variant stocks
