@@ -3,7 +3,6 @@
 if (!defined('ABSPATH')) {
     exit;
 }
-
 class WSS_Admin
 {
     const PAGE_SLUG = 'wss-shopier';
@@ -30,7 +29,6 @@ class WSS_Admin
         add_action('admin_post_wss_export_products_csv', [__CLASS__, 'handle_export_products_csv']);
         add_action('admin_post_wss_import_products_csv', [__CLASS__, 'handle_import_products_csv']);
     }
-
     public static function handle_load_shopier_products_catalog()
     {
         self::require_mapping_capability();
@@ -253,18 +251,9 @@ class WSS_Admin
                     self::redirect_products(['wss_product_notice' => 'product_create_requires_unmatched']);
                 }
             }
-            $payer_value = isset($_POST['shipping_payer']) && is_scalar($_POST['shipping_payer'])
-                ? sanitize_text_field(wp_unslash($_POST['shipping_payer']))
-                : 'sellerPays';
-            $payer_value = in_array($payer_value, ['sellerPays', 'buyerPays'], true) ? $payer_value : 'sellerPays';
-            foreach ($selected_product_ids as $product_id) {
-                update_post_meta($product_id, '_wss_shopier_shipping_payer', $payer_value);
-            }
-            $shipping_payer = $payer_value;
             $job_id = self::enqueue_product_job(
                 'product_create',
-                $selected_product_ids,
-                ['shipping_payer' => $shipping_payer]
+                $selected_product_ids
             );
             self::redirect_products([
                 'wss_product_notice' => is_wp_error($job_id)
@@ -276,16 +265,11 @@ class WSS_Admin
         }
 
         if (in_array($operation, ['single_update', 'bulk_update'], true)) {
-            $payer_value = isset($_POST['shipping_payer']) && is_scalar($_POST['shipping_payer'])
-                ? sanitize_text_field(wp_unslash($_POST['shipping_payer']))
-                : 'sellerPays';
-            $payer_value = in_array($payer_value, ['sellerPays', 'buyerPays'], true) ? $payer_value : 'sellerPays';
             foreach ($selected_product_ids as $product_id) {
                 $product = wc_get_product($product_id);
                 if (!$product || !WSS_Product_Sync::get_existing_shopier_product_id($product_id)) {
                     self::redirect_products(['wss_product_notice' => 'product_update_requires_matched']);
                 }
-                update_post_meta($product_id, '_wss_shopier_shipping_payer', $payer_value);
             }
             $job_id = self::enqueue_product_job('product_update', $selected_product_ids);
             self::redirect_products([
@@ -910,7 +894,7 @@ class WSS_Admin
 
     public static function handle_shopier_connection_test()
     {
-        if (!current_user_can('manage_woocommerce')) {
+        if (!current_user_can('manage_options')) {
             wp_die('Bu işlemi yapma yetkiniz yok.');
         }
 
@@ -935,7 +919,7 @@ class WSS_Admin
 
     public static function handle_save_shopier_settings()
     {
-        if (!current_user_can('manage_woocommerce')) {
+        if (!current_user_can('manage_options')) {
             wp_die('Bu işlemi yapma yetkiniz yok.');
         }
 
@@ -951,13 +935,14 @@ class WSS_Admin
             $value = isset($_POST[$option]) && is_scalar($_POST[$option])
                 ? trim((string) wp_unslash($_POST[$option]))
                 : '';
-            update_option($option, $value, false);
+            if ($value !== '') {
+                update_option($option, $value, false);
+            }
         }
 
         $text_fields = [
             'wss_shopier_client_id' => 'sanitize_text_field',
             'wss_shopier_api_base_url' => 'esc_url_raw',
-            'wss_shopier_token_url' => 'esc_url_raw',
         ];
         foreach ($text_fields as $option => $sanitizer) {
             if (!isset($_POST[$option]) || !is_scalar($_POST[$option])) {
@@ -966,6 +951,13 @@ class WSS_Admin
             $value = trim((string) wp_unslash($_POST[$option]));
             if ($option === 'wss_shopier_client_id') {
                 update_option($option, call_user_func($sanitizer, $value), false);
+            } elseif ($option === 'wss_shopier_api_base_url' && !WSS_Shopier_API::is_allowed_base_url($value)) {
+                wp_safe_redirect(add_query_arg([
+                    'page' => self::PAGE_SLUG,
+                    'tab' => 'settings',
+                    'wss_notice' => 'shopier_api_url_invalid',
+                ], admin_url('admin.php')));
+                exit;
             } elseif ($value === '') {
                 delete_option($option);
             } else {
@@ -2070,9 +2062,11 @@ class WSS_Admin
             'orders'     => 'Siparişler',
             'shippings'  => 'Kargolar',
             'logs'       => 'Senkronizasyon Detayları',
-            'settings'   => 'Ayarlar',
             'help'       => 'Yardım',
         ];
+        if (current_user_can('manage_options')) {
+            $tabs['settings'] = 'Ayarlar';
+        }
 
         $active_tab = isset($_GET['tab'])
             ? sanitize_key(wp_unslash($_GET['tab']))
@@ -2080,6 +2074,9 @@ class WSS_Admin
 
         if (!array_key_exists($active_tab, $tabs)) {
             $active_tab = 'overview';
+        }
+        if ($active_tab === 'settings' && !current_user_can('manage_options')) {
+            wp_die('Shopier entegrasyon ayarlarını görüntüleme yetkiniz yok.');
         }
 
         echo '<style>
@@ -3969,7 +3966,6 @@ class WSS_Admin
             }
             wp_nonce_field('wss_products_action');
             echo '<div class="wss-product-bulk-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;">';
-            echo '<label>Kargo ödeyeni <select name="shipping_payer"><option value="sellerPays">Satıcı öder (varsayılan)</option><option value="buyerPays">Alıcı öder</option></select></label> ';
             if ($status === 'unmatched') {
                 echo '<button type="submit" class="button button-primary wss-bulk-map" name="operation" value="bulk_map" disabled>Eşleştir</button> ';
                 echo '<button type="submit" class="button button-primary wss-bulk-create" name="operation" value="bulk_create"' . ($job_writes_blocked ? ' disabled' : '') . '>Seçilenleri Shopier’de oluştur/senkronize et</button> ';
@@ -4524,6 +4520,8 @@ class WSS_Admin
 
             if ($notice === 'shopier_settings_saved') {
                 echo '<div class="notice notice-success is-dismissible"><p>Shopier ayarları kaydedildi.</p></div>';
+            } elseif ($notice === 'shopier_api_url_invalid') {
+                echo '<div class="notice notice-error is-dismissible"><p>API adresi yalnızca HTTPS üzerinden api.shopier.com üzerinde ve /v1 yolunda olabilir.</p></div>';
             } elseif ($notice === 'shopier_connection_ok') {
                 echo '<div class="notice notice-success is-dismissible"><p>Shopier API bağlantısı doğrulandı (salt-okunur test).</p></div>';
             } elseif ($notice === 'shopier_connection_failed') {
@@ -4552,40 +4550,28 @@ class WSS_Admin
         ];
         echo '<div class="card" style="max-width:760px;padding:12px 20px;margin-bottom:20px;">';
         echo '<h3>Shopier kimlik bilgileri</h3>';
-        echo '<p>Gizli değerler parola alanında maskeli gösterilir. Göz düğmesiyle değeri görüntüleyebilir, alana yeni bir değer girerek güncelleyebilirsiniz.</p>';
+        echo '<p>Mevcut gizli değerler forma geri gönderilmez. Bir değeri değiştirmek için yeni değeri girin; değiştirmiyorsanız alanı boş bırakın.</p>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo '<input type="hidden" name="action" value="wss_save_shopier_settings">';
         wp_nonce_field('wss_save_shopier_settings');
         $client_id = WSS_Shopier_API::get_client_id();
         echo '<p><label for="wss_shopier_client_id"><strong>Client ID</strong></label><br>';
         echo '<input class="regular-text" type="text" id="wss_shopier_client_id" name="wss_shopier_client_id" value="' . esc_attr($client_id) . '"></p>';
-        $secret_values = [
-            'wss_shopier_client_secret' => WSS_Shopier_API::get_client_secret(),
-            'wss_shopier_pat' => WSS_Shopier_API::get_pat(),
-            'wss_shopier_webhook_product_updated_token' => WSS_Shopier_API::get_webhook_token('product.updated'),
-        ];
         foreach ($secret_options as $option => $label) {
-            $configured = $secret_values[$option] !== '';
+            $configured = get_option($option, '') !== '';
             foreach ($constant_names[$option] as $constant) {
                 $configured = $configured || (defined($constant) && constant($constant) !== '');
             }
             echo '<p><label for="' . esc_attr($option) . '"><strong>' . esc_html($label) . '</strong></label><br>';
-            echo '<span class="wss-secret-field" style="display:inline-flex;align-items:center;gap:4px;max-width:100%;">';
-            echo '<input class="regular-text" type="password" autocomplete="new-password" id="' . esc_attr($option) . '" name="' . esc_attr($option) . '" value="' . esc_attr($secret_values[$option]) . '" placeholder="' . ($configured ? 'Yapılandırılmış değer' : 'Henüz ayarlanmamış') . '">';
-            echo '<button type="button" class="button wss-toggle-secret" aria-label="Değeri göster" aria-pressed="false" data-show-label="Değeri göster" data-hide-label="Değeri gizle"><span class="dashicons dashicons-visibility" aria-hidden="true"></span></button>';
-            echo '</span></p>';
+            echo '<input class="regular-text" type="password" autocomplete="new-password" id="' . esc_attr($option) . '" name="' . esc_attr($option) . '" value="" placeholder="' . esc_attr($configured ? 'Yapılandırılmış; yalnızca değiştirmek için girin' : 'Henüz ayarlanmamış') . '"></p>';
         }
         $api_base_url = get_option('wss_shopier_api_base_url', 'https://api.shopier.com/v1');
-        $token_url = get_option('wss_shopier_token_url', 'https://api.shopier.com:8443/v1/oauth2/token');
         echo '<p><label for="wss_shopier_api_base_url"><strong>API Base URL</strong></label><br><input class="regular-text" type="url" id="wss_shopier_api_base_url" name="wss_shopier_api_base_url" value="' . esc_attr($api_base_url) . '"></p>';
-        echo '<p><label for="wss_shopier_token_url"><strong>OAuth Token URL</strong></label><br><input class="regular-text" type="url" id="wss_shopier_token_url" name="wss_shopier_token_url" value="' . esc_attr($token_url) . '"></p>';
         echo '<p class="description">PAT API çağrılarında kullanılabilir. Client ID ve Secret saklanır; OAuth yönlendirme ve yetkilendirme akışı henüz bu eklentide uygulanmamıştır. Webhook tokenları olay adına göre ayrı doğrulanır.</p>';
         echo '<p><strong>Stok webhook ayarı:</strong> Shopier’de <code>product.updated</code> olayı için aşağıdaki REST adresini tanımlayın ve o olay için verilen imza tokenını yukarıdaki alana kaydedin. Başka olaylar için Shopier ayrı token verirse her olaya özel alan eklenebilir.</p>';
         echo '<p><code>' . esc_html(rest_url('woo-shopier-sync/v1/webhook')) . '</code></p>';
         submit_button('Ayarları kaydet');
         echo '</form></div>';
-
-        echo '<script>(function(){document.querySelectorAll(".wss-toggle-secret").forEach(function(button){button.addEventListener("click",function(){var field=button.parentElement.querySelector("input");var show=field.type==="password";field.type=show?"text":"password";button.setAttribute("aria-pressed",show?"true":"false");button.setAttribute("aria-label",show?button.dataset.hideLabel:button.dataset.showLabel);var icon=button.querySelector(".dashicons");icon.classList.toggle("dashicons-visibility",!show);icon.classList.toggle("dashicons-hidden",show);});});})();</script>';
 
         echo '<div class="card" style="max-width:640px;padding:12px 20px;">';
         echo '<h3>Shopier bağlantısı</h3>';
@@ -4626,10 +4612,7 @@ class WSS_Admin
         echo '<li>Yeni ürün oluşturmak için satırdaki ekleme düğmesini veya ürünleri seçip toplu ekleme düğmesini kullanın. Sonucu ürün satırındaki durumdan izleyin.</li>';
         echo '</ol><p>Değişken WooCommerce ürünü Shopier’de <strong>tek bir varyasyonlu ürün</strong> olarak oluşturulur; her varyasyon için ayrı Shopier ürünü açılmaz.</p></section>';
 
-        echo '<section><h3>Kargo ücretini kimin ödeyeceğini seçin</h3><ol>';
-        echo '<li><a href="' . esc_url($products_url) . '">Ürünler</a> sekmesinde, ürün listesinin üstündeki <strong>Kargo ödeyeni</strong> alanından <strong>Satıcı öder</strong> veya <strong>Alıcı öder</strong> seçin. Varsayılan seçim satıcıdır.</li>';
-        echo '<li>Bu seçimi ürün oluşturma veya güncelleme işleminden önce yapın. Seçim, satırdaki tekli işlemde o ürüne; toplu işlemde seçili ürünlerin tamamına uygulanır.</li>';
-        echo '</ol><p>Seçim ürün için kaydedilir ve Shopier’e aktarılır. Sayfa yeniden açıldığında alan varsayılan seçime döner; başka bir işlem başlatmadan önce tekrar kontrol edin. Bu alan kargo firmasını değil, kargo ücretini kimin ödeyeceğini belirler.</p></section>';
+        echo '<section><h3>Kargo ücretini kimin ödeyeceği</h3><p>WooCommerce ürününde gönderim sınıfı varsa satıcı öder (<code>sellerPays</code>); gönderim sınıfı yoksa alıcı öder (<code>buyerPays</code>). Bu kural ürün oluşturma ve güncellemede uygulanır.</p></section>';
 
         echo '<section><h3>Ürünleri güncelleyin</h3><ol>';
         echo '<li>Ürünler sekmesinde <strong>Eşleştirilmiş Ürünler</strong> bölümünü açın.</li>';
@@ -4656,12 +4639,9 @@ class WSS_Admin
         echo '</div>';
         echo '<p class="wss-guide-note"><strong>İpucu:</strong> Ürün ekleme veya toplu güncelleme öncesinde Shopier ürün bağlantısını ve varyasyon eşlemelerini kontrol edin.</p>';
     }
-
     private static function render_placeholder($title)
     {
         echo '<h2>' . esc_html($title) . '</h2>';
         echo '<p>Bu bölüm sonraki geliştirme aşamasında etkinleştirilecek.</p>';
     }
 }
-
-WSS_Admin::init();

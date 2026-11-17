@@ -34,7 +34,7 @@ class WSS_Shopier_API
 
     public static function get_webhook_token($event = '')
     {
-        $event = sanitize_key((string) $event);
+        $event = strtolower(trim((string) $event));
         $tokens = get_option('wss_shopier_webhook_tokens', []);
         if ($event !== '' && is_array($tokens) && !empty($tokens[$event])) {
             return (string) $tokens[$event];
@@ -58,14 +58,34 @@ class WSS_Shopier_API
     public static function get_base_url()
     {
         $option = get_option('wss_shopier_api_base_url', '');
-        if ($option !== '') {
+        if ($option !== '' && self::is_allowed_base_url($option)) {
             return untrailingslashit($option);
         }
-        if (defined('SHOPIER_API_BASE_URL') && constant('SHOPIER_API_BASE_URL')) {
+        if (
+            defined('SHOPIER_API_BASE_URL') &&
+            constant('SHOPIER_API_BASE_URL') &&
+            self::is_allowed_base_url(constant('SHOPIER_API_BASE_URL'))
+        ) {
             return rtrim(constant('SHOPIER_API_BASE_URL'), '/');
         }
 
         return 'https://api.shopier.com/v1';
+    }
+
+    public static function is_allowed_base_url($url)
+    {
+        $url = trim((string) $url);
+        $parts = wp_parse_url($url);
+
+        return is_array($parts)
+            && strtolower((string) ($parts['scheme'] ?? '')) === 'https'
+            && strtolower((string) ($parts['host'] ?? '')) === 'api.shopier.com'
+            && empty($parts['user'])
+            && empty($parts['pass'])
+            && empty($parts['port'])
+            && rtrim((string) ($parts['path'] ?? ''), '/') === '/v1'
+            && empty($parts['query'])
+            && empty($parts['fragment']);
     }
 
     public static function get_token_url()
@@ -131,6 +151,12 @@ class WSS_Shopier_API
 
     public static function request($method, $path, $payload = [], $token = null)
     {
+        if (!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, '//') === 0) {
+            return [
+                'success' => false,
+                'message' => 'Shopier request path is invalid.',
+            ];
+        }
         $url = self::get_base_url() . $path;
         $token = $token ?: self::get_access_token();
 
@@ -172,19 +198,9 @@ class WSS_Shopier_API
                     'payload_size' => strlen($encoded_payload),
                 ]);
             }
-            // Log full payload on errors (will be checked after response)
-            if ($method === 'PUT') {
-                // Store payload for verification logging if needed
-                // This is used to cross-reference error responses
-                $GLOBALS['wss_last_payload'] = [
-                    'method' => $method,
-                    'endpoint' => $url,
-                    'payload' => $payload,
-                ];
-            }
         }
 
-        $response = wp_remote_request($url, $args);
+        $response = wp_safe_remote_request($url, $args);
 
         if (is_wp_error($response)) {
             return [
@@ -199,14 +215,14 @@ class WSS_Shopier_API
         // Log error responses for debugging
         if ($status >= 400) {
             $response_body = wp_remote_retrieve_body($response);
-            error_log('Shopier API Error (HTTP ' . $status . '): ' . $response_body);
-            
-            // Also log to plugin logger
+            $response_summary = self::get_error_summary($body, 'HTTP request failed.');
+
             require_once __DIR__ . '/class-wss-logger.php';
             WSS_Logger::log('shopier-api', 'API request error', 'ERROR', [
                 'event' => 'api_request_error',
                 'http_status' => $status,
-                'response_body' => $response_body,
+                'response_error' => $response_summary,
+                'payload_size' => strlen($response_body),
             ]);
         }
 

@@ -438,10 +438,6 @@ class WSS_Queue
                 );
 
             case 'product_create':
-                $product_shipping_payer = get_post_meta($product_id, '_wss_shopier_shipping_payer', true);
-                if (!in_array($product_shipping_payer, ['sellerPays', 'buyerPays'], true)) {
-                    $product_shipping_payer = $job_data['shipping_payer'] ?? 'sellerPays';
-                }
                 $next_placement_score = absint($job_data['next_placement_score'] ?? 0);
                 if ($next_placement_score < 2) {
                     $score_result = WSS_Shopier_API::get_next_placement_score();
@@ -478,7 +474,6 @@ class WSS_Queue
                 return self::normalize_result(
                     WSS_Product_Sync::create_product(
                         $product_id,
-                        (string) $product_shipping_payer,
                         $next_placement_score
                     ),
                     'wss_product_create_failed'

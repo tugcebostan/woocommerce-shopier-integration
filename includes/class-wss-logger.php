@@ -10,6 +10,8 @@ class WSS_Logger
 
     private static function prune_old_logs()
     {
+        self::remove_legacy_public_logs();
+
         if (get_transient('wss_log_retention_last_run')) {
             return;
         }
@@ -143,6 +145,34 @@ class WSS_Logger
         set_transient('wss_log_retention_last_run', time(), HOUR_IN_SECONDS);
     }
 
+    private static function remove_legacy_public_logs()
+    {
+        $upload_dir = wp_upload_dir();
+        $legacy_log_directory = trailingslashit($upload_dir['basedir'])
+            . 'woo-shopier-sync-uploads/logs/';
+
+        if (!is_dir($legacy_log_directory) || is_link(rtrim($legacy_log_directory, '/'))) {
+            return;
+        }
+
+        $files = glob($legacy_log_directory . '*-????-??.log');
+        if (is_array($files)) {
+            foreach ($files as $filename) {
+                if (
+                    is_file($filename) &&
+                    preg_match('/\A[a-z0-9_-]+-\d{4}-\d{2}\.log\z/i', basename($filename))
+                ) {
+                    @unlink($filename);
+                }
+            }
+        }
+
+        @unlink(dirname($legacy_log_directory) . '/.htaccess');
+        @unlink(dirname($legacy_log_directory) . '/index.php');
+        @rmdir(rtrim($legacy_log_directory, '/'));
+        @rmdir(dirname($legacy_log_directory));
+    }
+
     private static function trim_log_file($filename, $max_bytes)
     {
         $handle = @fopen($filename, 'c+');
@@ -246,10 +276,15 @@ class WSS_Logger
 
     private static function get_log_directory()
     {
-        $upload_dir = wp_upload_dir();
+        $base_directory = defined('WSS_LOG_DIR') && constant('WSS_LOG_DIR')
+            ? constant('WSS_LOG_DIR')
+            : trailingslashit(sys_get_temp_dir()) . 'woo-shopier-sync-logs-' . substr(
+                hash('sha256', (string) home_url('/')),
+                0,
+                16
+            );
 
-        return trailingslashit($upload_dir['basedir'])
-            . 'woo-shopier-sync-uploads/logs/';
+        return trailingslashit($base_directory);
     }
 
     private static function ensure_log_directory($directory)
@@ -258,25 +293,17 @@ class WSS_Logger
             wp_mkdir_p($directory);
         }
 
-        if (!is_dir($directory) || !is_writable($directory)) {
+        if (
+            !is_dir($directory) ||
+            is_link(rtrim($directory, '/')) ||
+            !is_writable($directory) ||
+            (function_exists('posix_geteuid') && @fileowner($directory) !== posix_geteuid())
+        ) {
             return false;
         }
 
-        // Prevent direct access on Apache servers.
-        $htaccess = dirname($directory) . '/.htaccess';
-
-        if (!file_exists($htaccess)) {
-            file_put_contents(
-                $htaccess,
-                "Require all denied\nDeny from all\n"
-            );
-        }
-
-        // Prevent directory listing.
-        $index_file = dirname($directory) . '/index.php';
-
-        if (!file_exists($index_file)) {
-            file_put_contents($index_file, '<?php // Silence is golden.');
+        if (!is_readable($directory) || (fileperms($directory) & 0077) !== 0) {
+            @chmod($directory, 0700);
         }
 
         return true;
@@ -311,7 +338,6 @@ class WSS_Logger
             'payload_structure',
             'endpoint',
             'response_error',
-            'request_body',
             'remote_value',
             'job_id',
             'item_id',
@@ -353,11 +379,9 @@ class WSS_Logger
             'actual_primary',
             'expected_primary',
             'http_status',
-            'response_body',
             'response_message',
             'payload_size',
             'method',
-            'payload',
             'response',
         ];
 
@@ -365,9 +389,6 @@ class WSS_Logger
             $context,
             array_flip($allowed_context)
         );
-        if (isset($safe_context['request_body']) && !is_array($safe_context['request_body'])) {
-            unset($safe_context['request_body']);
-        }
         if (isset($safe_context['remote_value'])) {
             $safe_context['remote_value'] = substr(
                 sanitize_text_field((string) $safe_context['remote_value']),

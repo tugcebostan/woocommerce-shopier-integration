@@ -38,7 +38,9 @@ Shopier stoklarını Ürünler sekmesindeki **Shopier stoklarını güncelle** d
 
 ### Kargo ödeyeni
 
-Ürünler sekmesinde, ürün listesinin üstündeki **Kargo ödeyeni** alanından **Satıcı öder** (varsayılan) veya **Alıcı öder** seçin. Seçim, tekli oluşturma/güncellemede ilgili ürüne, toplu işlemde seçilen bütün ürünlere uygulanır ve ürün için kaydedilerek Shopier isteğine eklenir. Sayfa yeniden açıldığında seçim alanı tekrar varsayılana döner; her oluşturma veya güncellemeden önce kontrol edin. Bu ayar kargo firmasını değil, ücreti kimin ödeyeceğini belirler.
+İstenen kural: WooCommerce ürününde gönderim tipi seçilmemişse `buyerPays` (alıcı öder), seçilmişse `sellerPays` (satıcı öder) kullanılmasıdır.
+
+Kargo ödeyeni, kargo firmasını değil, ücreti kimin ödeyeceğini belirtir.
 
 ## Webhook
 
@@ -78,15 +80,15 @@ Eklenti giriş noktası [`woo-shopier-sync.php`](woo-shopier-sync.php) modüller
 
 ### Veri akışları
 
-- **Ürün aktarımı:** Yönetim ekranı ürünleri ve kargo ödeyenini seçer, kuyruğa iş ekler. Kuyruk ürün senkronizasyonunu çağırır; API katmanı Shopier’e istek gönderir. Değişken ürünlerde seçim kombinasyonları doğrulanır; güncellemelerde uzak ürün tekrar okunur ve sonuç kontrol edilir. Başarısız veya sonucu belirsiz işlemleri tekrar başlatmadan önce Shopier’deki ürünü kontrol edin.
+- **Ürün aktarımı:** Yönetim ekranı seçilen ürünler için kuyruğa iş ekler. Kuyruk ürün senkronizasyonunu çağırır; API katmanı Shopier’e istek gönderir. Değişken ürünlerde seçim kombinasyonları doğrulanır; güncellemelerde uzak ürün tekrar okunur ve sonuç kontrol edilir. Başarısız veya sonucu belirsiz işlemleri tekrar başlatmadan önce Shopier’deki ürünü kontrol edin.
 - **Stok:** Ürünler sekmesinden başlatılan stok yenilemesi veya doğrulanmış `product.updated` webhook’u Shopier stoklarını eşlenmiş WooCommerce ürünlerine/varyasyonlarına aktarır.
 - **Satın alma:** Ürün düzenleme ekranına kaydedilen Shopier ürün bağlantısı kullanılır; değişken ürünün varyasyonları ana ürün bağlantısını paylaşır. Eski sepet aktarımı etkin değildir.
 
 Veritabanında WordPress tablo önekinden sonra `wss_` gelir: `product_map` ürün ID’lerini, `attribute_map` özellik/seçim eşlemelerini, `variation_map` varyasyon kombinasyonlarını, `sync_jobs` ve `sync_job_items` iş durumlarını, `stock_sync_log` stok hareketlerini, `order_map` ise sipariş eşleme tablosunu tutar. Tablo tanımı tek başına otomatik sipariş senkronizasyonu yapıldığı anlamına gelmez.
 
-Günlükler yükleme dizinindeki `woo-shopier-sync-uploads/logs/` altında modül ve aya göre tutulur; yönetim panelindeki **Senkronizasyon Detayları** ekranından da incelenebilir. Shopier HTTP hatalarında API yanıtı günlükte bulunabilir. Günlükleri paylaşmadan önce ürün ve diğer hassas bilgileri gözden geçirin.
+Günlükler web kökü dışında, PHP geçici dizini altında siteye özel ve erişimi sınırlandırılmış bir klasörde tutulur. `WSS_LOG_DIR` sabitiyle kalıcı ve web dışında bir günlük dizini belirtilebilir. Kayıtlar yönetim panelindeki **Senkronizasyon Detayları** ekranından incelenebilir. Ham API yanıt gövdeleri ve ürün payload'ları günlüklerde saklanmaz.
 
-Değişikliklerde en azından ilgili PHP dosyasını `php -l includes/dosya-adi.php` ile kontrol edin; davranış değişikliklerini WooCommerce ve Shopier test ortamında uygun tekli/toplu işlemlerle doğrulayın. [`test-token.php`](test-token.php) bağımsız bir CSRF/cookie tanılama betiğidir, otomatik test paketi değildir.
+Değişikliklerde en azından ilgili PHP dosyasını `php -l includes/dosya-adi.php` ile kontrol edin; davranış değişikliklerini WooCommerce ve Shopier test ortamında uygun tekli/toplu işlemlerle doğrulayın. Tanılama betiklerini production eklenti klasöründe bulundurmayın.
 
 ## Güvenlik notları
 

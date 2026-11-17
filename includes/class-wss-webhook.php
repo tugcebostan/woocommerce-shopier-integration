@@ -32,6 +32,7 @@ class WSS_Webhook
      */
     private static function verify_signature($payload, $signature, $event)
     {
+        $event = strtolower(trim((string) $event));
         $webhook_token = WSS_Shopier_API::get_webhook_token($event);
         if (empty($webhook_token) || empty($signature)) {
             return false;
@@ -82,8 +83,15 @@ class WSS_Webhook
         $payload = $request->get_body();
 
         $signature  = $request->get_header('shopier-signature');
-        $event      = $request->get_header('shopier-event');
+        $event      = strtolower(trim((string) $request->get_header('shopier-event')));
         $account_id = $request->get_header('shopier-account-id');
+
+        if ($event !== 'product.updated') {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Unsupported webhook event.',
+            ], 400);
+        }
 
         // 1. Verify signature.
         if (!self::verify_signature($payload, $signature, $event)) {
@@ -124,7 +132,15 @@ class WSS_Webhook
                 'message' => 'Invalid JSON payload.',
             ], 400);
         }
-        
+
+        $replay_key = 'wss_webhook_' . hash('sha256', $event . '|' . $signature . '|' . $payload);
+        if (get_transient($replay_key)) {
+            return new WP_REST_Response([
+                'success' => true,
+                'message' => 'Duplicate webhook ignored.',
+            ], 200);
+        }
+
         // 3. Log successful verification.
         WSS_Logger::log(
             'webhook',
@@ -136,7 +152,7 @@ class WSS_Webhook
             ]
         );
 
-        if (sanitize_key((string) $event) === 'product.updated') {
+        if ($event === 'product.updated') {
             $shopier_product_id = self::extract_product_id($data);
             if ($shopier_product_id === '') {
                 return new WP_REST_Response([
@@ -158,6 +174,8 @@ class WSS_Webhook
                     'message' => 'Product stock synchronization could not be scheduled.',
                 ], 500);
             }
+
+            set_transient($replay_key, 1, 10 * MINUTE_IN_SECONDS);
 
             WSS_Logger::log('webhook', 'Shopier stok güncellemesi kuyruğa alındı.', 'INFO', [
                 'event' => 'shopier_stock_sync_queued',

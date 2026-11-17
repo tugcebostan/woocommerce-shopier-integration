@@ -71,7 +71,7 @@ class WSS_Product_Sync
         ));
     }
 
-    public static function create_product($wc_product_id, $shipping_payer, $placement_score = null)
+    public static function create_product($wc_product_id, $placement_score = null)
     {
         global $wpdb;
 
@@ -91,7 +91,7 @@ class WSS_Product_Sync
             );
         }
 
-        $payload = self::build_create_payload($product, $shipping_payer);
+        $payload = self::build_create_payload($product);
         if (is_wp_error($payload)) {
             return $payload;
         }
@@ -141,7 +141,6 @@ class WSS_Product_Sync
                         'fields' => array_keys($payload),
                         'variation_count' => count($payload['variants'] ?? []),
                     ],
-                    'request_body' => $payload,
                 ]
             );
             $error_suffix = $error_details !== ''
@@ -379,14 +378,8 @@ class WSS_Product_Sync
         return 'https://www.shopier.com/zevrakdesign/' . rawurlencode($shopier_product_id);
     }
 
-    private static function build_create_payload($product, $shipping_payer)
+    private static function build_create_payload($product)
     {
-        if (!in_array($shipping_payer, ['sellerPays', 'buyerPays'], true)) {
-            return new WP_Error(
-                'wss_product_create_shipping_payer_invalid',
-                'Yeni ürün oluşturmadan önce kargo ücretini kimin ödeyeceğini seçin.'
-            );
-        }
         if (
             !$product->is_type(['simple', 'variable']) ||
             sanitize_text_field((string) $product->get_name()) === ''
@@ -414,7 +407,7 @@ class WSS_Product_Sync
                 ? 'digital'
                 : 'physical',
             'media' => $media,
-            'shippingPayer' => $shipping_payer,
+            'shippingPayer' => self::get_shipping_payer($product),
         ];
 
         if ($product->is_type('simple')) {
@@ -557,10 +550,7 @@ class WSS_Product_Sync
         $payload['type'] = $product->is_virtual() || $product->is_downloadable()
             ? 'digital'
             : 'physical';
-        $shipping_payer = get_post_meta($product->get_id(), '_wss_shopier_shipping_payer', true);
-        $payload['shippingPayer'] = in_array($shipping_payer, ['sellerPays', 'buyerPays'], true)
-            ? $shipping_payer
-            : 'sellerPays';
+        $payload['shippingPayer'] = self::get_shipping_payer($product);
 
         $product_media = self::get_product_media($product);
         if (!empty($product_media)) {
@@ -1125,6 +1115,13 @@ class WSS_Product_Sync
         }
 
         return (int) $quantity;
+    }
+
+    private static function get_shipping_payer($product)
+    {
+        return is_object($product) && method_exists($product, 'get_shipping_class_id') && $product->get_shipping_class_id()
+            ? 'sellerPays'
+            : 'buyerPays';
     }
 
     private static function get_product_shipping_price($product)
