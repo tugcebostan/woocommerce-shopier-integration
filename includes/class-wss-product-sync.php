@@ -13,7 +13,8 @@ class WSS_Product_Sync
         $wc_product_id = absint($wc_product_id);
         $shopier_product_id = trim(sanitize_text_field((string) $shopier_product_id));
 
-        if ($wc_product_id <= 0 || !wc_get_product($wc_product_id)) {
+        $wc_product = $wc_product_id > 0 ? wc_get_product($wc_product_id) : false;
+        if ($wc_product_id <= 0 || !$wc_product || !$wc_product->is_type(['simple', 'variable'])) {
             return new WP_Error(
                 'wss_product_mapping_invalid_wc_product',
                 'WooCommerce product was not found.'
@@ -30,137 +31,60 @@ class WSS_Product_Sync
                 'Enter a valid Shopier product ID.'
             );
         }
-
         $table = $wpdb->prefix . 'wss_product_map';
         $now = current_time('mysql');
-
         if ($wpdb->query('START TRANSACTION') === false) {
-            return new WP_Error(
-                'wss_product_mapping_transaction_failed',
-                'Could not start the product mapping transaction.'
-            );
+            return new WP_Error('wss_product_mapping_transaction_failed', 'Could not start the product mapping transaction.');
         }
-
-        $conflict = $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT wc_product_id
-                FROM `{$table}`
-                WHERE shopier_product_id = %s
-                  AND wc_product_id != %d
-                LIMIT 1
-                FOR UPDATE",
-                $shopier_product_id,
-                $wc_product_id
-            )
-        );
-
+        $conflict = $wpdb->get_var($wpdb->prepare(
+            "SELECT wc_product_id FROM `{$table}` WHERE shopier_product_id = %s AND wc_product_id != %d LIMIT 1 FOR UPDATE",
+            $shopier_product_id,
+            $wc_product_id
+        ));
         if ($conflict) {
             $wpdb->query('ROLLBACK');
-            return new WP_Error(
-                'wss_product_mapping_shopier_id_in_use',
-                'This Shopier product is already mapped to a different WooCommerce product.'
-            );
+            return new WP_Error('wss_product_mapping_shopier_id_in_use', 'This Shopier product is already mapped to a different WooCommerce product.');
         }
-
-        $existing = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT id, shopier_product_id
-                FROM `{$table}`
-                WHERE wc_product_id = %d
-                LIMIT 1
-                FOR UPDATE",
-                $wc_product_id
-            ),
-            ARRAY_A
-        );
-
-        if ($existing) {
-            if ((string) $existing['shopier_product_id'] !== $shopier_product_id) {
-                $variation_table = $wpdb->prefix . 'wss_variation_map';
-                $variation_count = (int) $wpdb->get_var(
-                    $wpdb->prepare(
-                        "SELECT COUNT(*)
-                        FROM `{$variation_table}`
-                        WHERE wc_product_id = %d",
-                        $wc_product_id
-                    )
-                );
-
-                if ($variation_count > 0) {
-                    $wpdb->query('ROLLBACK');
-                    return new WP_Error(
-                        'wss_product_mapping_has_variations',
-                        'This product has variation mappings. Remove or review them before changing the Shopier product ID.'
-                    );
-                }
-            }
-
-            $result = $wpdb->update(
-                $table,
-                [
-                    'shopier_product_id' => $shopier_product_id,
-                    'sync_status' => 'mapped',
-                    'updated_at' => $now,
-                ],
-                ['id' => (int) $existing['id']],
-                ['%s', '%s', '%s'],
-                ['%d']
-            );
-        } else {
-            $result = $wpdb->insert(
-                $table,
-                [
-                    'wc_product_id' => $wc_product_id,
-                    'shopier_product_id' => $shopier_product_id,
-                    'sync_status' => 'mapped',
-                    'last_synced_at' => null,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ],
-                ['%d', '%s', '%s', '%s', '%s', '%s']
-            );
-        }
-
-        if ($result === false) {
+        $existing = $wpdb->get_row($wpdb->prepare(
+            "SELECT id FROM `{$table}` WHERE wc_product_id = %d LIMIT 1 FOR UPDATE",
+            $wc_product_id
+        ), ARRAY_A);
+        $saved = $existing
+            ? $wpdb->update($table, ['shopier_product_id' => $shopier_product_id, 'sync_status' => 'mapped', 'updated_at' => $now], ['id' => (int) $existing['id']], ['%s', '%s', '%s'], ['%d'])
+            : $wpdb->insert($table, ['wc_product_id' => $wc_product_id, 'shopier_product_id' => $shopier_product_id, 'sync_status' => 'mapped', 'last_synced_at' => null, 'created_at' => $now, 'updated_at' => $now], ['%d', '%s', '%s', '%s', '%s', '%s']);
+        if ($saved === false || $wpdb->query('COMMIT') === false) {
             $wpdb->query('ROLLBACK');
-            return new WP_Error(
-                'wss_product_mapping_save_failed',
-                'Could not save product mapping: ' . $wpdb->last_error
-            );
+            return new WP_Error('wss_product_mapping_save_failed', 'Could not save product mapping: ' . $wpdb->last_error);
         }
-
-        if ($wpdb->query('COMMIT') === false) {
-            $wpdb->query('ROLLBACK');
-            return new WP_Error(
-                'wss_product_mapping_commit_failed',
-                'Could not commit product mapping.'
-            );
-        }
-
+        update_post_meta($wc_product_id, '_wss_shopier_product_url', self::get_shopier_product_url($shopier_product_id));
+        delete_post_meta($wc_product_id, '_wss_shopier_product_id');
         return true;
     }
 
     public static function get_existing_shopier_product_id($wc_product_id)
     {
         global $wpdb;
-
         $table = $wpdb->prefix . 'wss_product_map';
-
-        return $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT shopier_product_id FROM `{$table}` WHERE wc_product_id = %d LIMIT 1",
-                absint($wc_product_id)
-            )
-        );
+        return (string) $wpdb->get_var($wpdb->prepare(
+            "SELECT shopier_product_id FROM `{$table}` WHERE wc_product_id = %d LIMIT 1",
+            absint($wc_product_id)
+        ));
     }
 
-    public static function create_product($wc_product_id, $shipping_payer)
+    public static function create_product($wc_product_id, $shipping_payer, $placement_score = null)
     {
         global $wpdb;
 
         $wc_product_id = absint($wc_product_id);
         $product = wc_get_product($wc_product_id);
-        if (!$product || self::get_existing_shopier_product_id($wc_product_id)) {
+        if (!$product) {
+            return new WP_Error(
+                'wss_product_create_mapping_exists',
+                'A valid WooCommerce product is required to create a new Shopier product.'
+            );
+        }
+
+        if (self::get_existing_shopier_product_id($wc_product_id)) {
             return new WP_Error(
                 'wss_product_create_mapping_exists',
                 'A valid unmatched WooCommerce product is required to create a new Shopier product.'
@@ -172,19 +96,23 @@ class WSS_Product_Sync
             return $payload;
         }
 
-        $placement_score = WSS_Shopier_API::get_next_placement_score();
-        if (empty($placement_score['success'])) {
-            $error_details = WSS_Shopier_API::get_error_summary(
-                $placement_score['body'] ?? null,
-                $placement_score['message'] ?? ''
-            );
-            return new WP_Error(
-                'wss_shopier_placement_score_unavailable',
-                'Yeni ürün oluşturulmadan önce Shopier sıralama puanı belirlenemedi.'
-                    . ($error_details !== '' ? ' ' . $error_details : '')
-            );
+        if ($placement_score === null) {
+            $placement_score_result = WSS_Shopier_API::get_next_placement_score();
+            if (empty($placement_score_result['success'])) {
+                $error_details = WSS_Shopier_API::get_error_summary(
+                    $placement_score_result['body'] ?? null,
+                    $placement_score_result['message'] ?? ''
+                );
+                return new WP_Error(
+                    'wss_shopier_placement_score_unavailable',
+                    'Yeni ürün oluşturulmadan önce Shopier sıralama puanı belirlenemedi.'
+                        . ($error_details !== '' ? ' ' . $error_details : '')
+                );
+            }
+            $placement_score = $placement_score_result['placement_score'] ?? 0;
         }
-        $payload['placementScore'] = absint($placement_score['placement_score'] ?? 0);
+
+        $payload['placementScore'] = absint($placement_score);
         if ($payload['placementScore'] < 2) {
             return new WP_Error(
                 'wss_shopier_placement_score_invalid',
@@ -274,7 +202,8 @@ class WSS_Product_Sync
                 (string) ($verified_body['id'] ?? '') === $shopier_product_id &&
                 (string) ($verified_body['title'] ?? '') === $payload['title'] &&
                 !is_wp_error($verified_placement_score) &&
-                $verified_placement_score === $payload['placementScore']
+                $verified_placement_score === $payload['placementScore'] &&
+                self::matches_create_payload($verified_body, $payload)
             ) {
                 $verification_failure = '';
                 break;
@@ -377,6 +306,14 @@ class WSS_Product_Sync
             );
         }
 
+        if (empty($product->get_meta('_wss_shopier_product_url', true))) {
+            $product->update_meta_data(
+                '_wss_shopier_product_url',
+                self::get_shopier_product_url($shopier_product_id)
+            );
+            $product->save_meta_data();
+        }
+
         if ($product->is_type('variable')) {
             $saved_variations = WSS_Variation_Map::save_product_from_global_mappings(
                 $wc_product_id,
@@ -430,6 +367,16 @@ class WSS_Product_Sync
             'message' => 'Shopier’de yeni ürün oluşturuldu ve WooCommerce ürünüyle eşleştirildi. Shopier ID: '
                 . $shopier_product_id . '.',
         ];
+    }
+
+    public static function get_shopier_product_url($shopier_product_id)
+    {
+        $shopier_product_id = trim((string) $shopier_product_id);
+        if ($shopier_product_id === '' || !preg_match('/\A[a-zA-Z0-9_-]+\z/', $shopier_product_id)) {
+            return '';
+        }
+
+        return 'https://www.shopier.com/zevrakdesign/' . rawurlencode($shopier_product_id);
     }
 
     private static function build_create_payload($product, $shipping_payer)
@@ -499,7 +446,8 @@ class WSS_Product_Sync
 
         $variants = [];
         $signatures = [];
-        $prices = [];
+        $regular_prices = [];
+        $current_prices = [];
         foreach ($variation_ids as $variation_id) {
             $variation = wc_get_product($variation_id);
             if (!$variation || !$variation->is_type('variation')) {
@@ -533,13 +481,11 @@ class WSS_Product_Sync
             }
             $signatures[$signature] = true;
 
-            $price = $variation->get_price();
-            if ($price === '' || !is_numeric($price) || (float) $price < 0) {
-                return new WP_Error(
-                    'wss_product_variation_price_invalid',
-                    'A WooCommerce variation has no valid price.'
-                );
+            $price_data = self::apply_product_price([], $variation);
+            if (is_wp_error($price_data)) {
+                return $price_data;
             }
+            $price_data['currency'] = $currency;
             $variant_payload = [
                 'selectionId' => array_values(array_map(
                     static function ($pair) {
@@ -547,10 +493,7 @@ class WSS_Product_Sync
                     },
                     $resolved['selection_pairs']
                 )),
-                'priceData' => [
-                    'currency' => $currency,
-                    'price' => wc_format_decimal($price, wc_get_price_decimals()),
-                ],
+                'priceData' => $price_data,
             ];
             if ($variation->managing_stock()) {
                 $quantity = self::get_integer_stock_quantity($variation);
@@ -560,13 +503,21 @@ class WSS_Product_Sync
                 $variant_payload['stockQuantity'] = $quantity;
             }
             $variants[] = $variant_payload;
-            $prices[] = (float) $price;
+            $regular_prices[] = (float) $price_data['price'];
+            $current_prices[] = (float) $variation->get_price();
         }
 
         $payload['priceData'] = [
             'currency' => $currency,
-            'price' => wc_format_decimal(min($prices), wc_get_price_decimals()),
+            'price' => wc_format_decimal(min($regular_prices), wc_get_price_decimals()),
+            'discount' => min($current_prices) < min($regular_prices),
         ];
+        if ($payload['priceData']['discount']) {
+            $payload['priceData']['discountedPrice'] = wc_format_decimal(
+                min($current_prices),
+                wc_get_price_decimals()
+            );
+        }
         $payload['variants'] = $variants;
 
         return $payload;
@@ -606,6 +557,10 @@ class WSS_Product_Sync
         $payload['type'] = $product->is_virtual() || $product->is_downloadable()
             ? 'digital'
             : 'physical';
+        $shipping_payer = get_post_meta($product->get_id(), '_wss_shopier_shipping_payer', true);
+        $payload['shippingPayer'] = in_array($shipping_payer, ['sellerPays', 'buyerPays'], true)
+            ? $shipping_payer
+            : 'sellerPays';
 
         $product_media = self::get_product_media($product);
         if (!empty($product_media)) {
@@ -677,6 +632,8 @@ class WSS_Product_Sync
         $currency = 'TRY';
 
         $variants = [];
+        $regular_prices = [];
+        $current_prices = [];
         foreach ($comparison['rows'] as $row) {
             $variation = wc_get_product(absint($row['variation_id']));
             if (!$variation || !$variation->is_type('variation') || empty($row['shopier_variant'])) {
@@ -696,23 +653,19 @@ class WSS_Product_Sync
                 );
             }
 
-            $price = $variation->get_price();
-            if ($price === '' || !is_numeric($price) || (float) $price < 0) {
-                return new WP_Error(
-                    'wss_product_variation_price_invalid',
-                    'A WooCommerce variation has no valid price.'
-                );
+            $variant_payload['priceData'] = self::apply_product_price([], $variation);
+            if (is_wp_error($variant_payload['priceData'])) {
+                return $variant_payload['priceData'];
             }
-            $variant_payload['priceData'] = [
-                'currency' => $currency,
-                'price' => wc_format_decimal($price, wc_get_price_decimals()),
-            ];
+            $variant_payload['priceData']['currency'] = $currency;
             
             // Only include fields that Shopier expects (filter out vatPercent and other read-only fields)
             $variant_payload['priceData'] = array_intersect_key(
                 $variant_payload['priceData'],
                 array_flip(['currency', 'price', 'discount', 'discountedPrice'])
             );
+            $regular_prices[] = (float) $variant_payload['priceData']['price'];
+            $current_prices[] = (float) $variation->get_price();
 
             if ($variation->managing_stock()) {
                 $quantity = self::get_integer_stock_quantity($variation);
@@ -762,8 +715,7 @@ class WSS_Product_Sync
         
         // Build root-level priceData with price (required by Shopier)
         // Use the product's get_price() which returns the min variant price
-        $price = $product->get_price();
-        if ($price === '' || !is_numeric($price) || (float) $price < 0) {
+        if (empty($regular_prices) || empty($current_prices)) {
             return new WP_Error(
                 'wss_product_price_invalid',
                 'Variable product has no valid base price.'
@@ -772,11 +724,25 @@ class WSS_Product_Sync
         
         $payload['priceData'] = [
             'currency' => 'TRY',
-            'price' => wc_format_decimal($price, wc_get_price_decimals()),
+            'price' => wc_format_decimal(min($regular_prices), wc_get_price_decimals()),
+            'discount' => min($current_prices) < min($regular_prices),
         ];
+        if ($payload['priceData']['discount']) {
+            $payload['priceData']['discountedPrice'] = wc_format_decimal(
+                min($current_prices),
+                wc_get_price_decimals()
+            );
+        }
         
         if (!is_wp_error($shipping_price) && $shipping_price !== null) {
             $payload['priceData']['shippingPrice'] = wc_format_decimal($shipping_price, wc_get_price_decimals());
+        } elseif (
+            isset($remote_body['priceData']) &&
+            is_array($remote_body['priceData']) &&
+            array_key_exists('shippingPrice', $remote_body['priceData'])
+        ) {
+            // Keep Shopier's current value when WooCommerce has no class rate to replace it with.
+            $payload['priceData']['shippingPrice'] = $remote_body['priceData']['shippingPrice'];
         }
         
         // Add root level stockQuantity as sum of all variant stocks
@@ -797,7 +763,7 @@ class WSS_Product_Sync
         return $payload;
     }
 
-    public static function update_mapped_product($wc_product_id, $comparison = null)
+    public static function update_mapped_product($wc_product_id, $comparison = null, $comparison_builder = null)
     {
         global $wpdb;
 
@@ -864,6 +830,13 @@ class WSS_Product_Sync
                 );
             }
 
+            if (is_callable($comparison_builder)) {
+                $comparison = call_user_func($comparison_builder, $fresh_product, $remote_body);
+                if (is_wp_error($comparison)) {
+                    return $comparison;
+                }
+            }
+
             if ($fresh_product->is_type('variable')) {
                 if (empty($comparison['complete']) || empty($comparison['rows'])) {
                     return new WP_Error(
@@ -920,21 +893,7 @@ class WSS_Product_Sync
             if (empty($response['success'])) {
                 $status = absint($response['status'] ?? 0);
                 
-                // Debug: log the error response
-                WSS_Logger::log(
-                    'shopier-api',
-                    'Update request failed - full response',
-                    'ERROR',
-                    [
-                        'event' => 'update_request_failed',
-                        'product_id' => $fresh_product->get_id(),
-                        'shopier_id' => $shopier_product_id,
-                        'http_status' => $status,
-                        'response' => json_encode($response),
-                    ]
-                );
-                
-                // Log error response for debugging
+                // Log one concise error record; the API layer also records transport details.
                 WSS_Logger::log(
                     'shopier-api',
                     'Product update failed',
@@ -1354,8 +1313,52 @@ class WSS_Product_Sync
         if ($score !== (int) $payload['placementScore']) {
             return 'Shopier placementScore did not match the create request.';
         }
+        if (!self::matches_price_data($body['priceData'] ?? null, $payload['priceData'] ?? [])) {
+            return 'Shopier price data did not match the create request.';
+        }
+        if (!self::matches_create_variants($body, $payload)) {
+            return 'Shopier variation prices did not match the create request.';
+        }
 
         return 'Shopier product read-back did not pass verification.';
+    }
+
+    private static function matches_create_payload($body, $payload)
+    {
+        return self::matches_price_data($body['priceData'] ?? null, $payload['priceData'] ?? []) &&
+            self::matches_create_variants($body, $payload);
+    }
+
+    private static function matches_create_variants($body, $payload)
+    {
+        $expected_variants = $payload['variants'] ?? [];
+        if (empty($expected_variants)) {
+            return true;
+        }
+
+        $actual_variants = $body['variants'] ?? null;
+        if (!is_array($actual_variants) || count($actual_variants) !== count($expected_variants)) {
+            return false;
+        }
+
+        foreach ($expected_variants as $expected) {
+            $expected_ids = array_map('strval', array_values($expected['selectionId'] ?? []));
+            $matched = false;
+            foreach ($actual_variants as $actual) {
+                $actual_ids = is_array($actual)
+                    ? array_map('strval', array_values($actual['selectionId'] ?? []))
+                    : [];
+                if ($actual_ids === $expected_ids) {
+                    $matched = self::matches_variant_payload($actual, $expected);
+                    break;
+                }
+            }
+            if (!$matched) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static function parse_verified_shopier_variants($body, $expected_product_id)
@@ -1434,7 +1437,7 @@ class WSS_Product_Sync
         }
 
         if (isset($payload['priceData'])) {
-            if (!self::matches_array_fields($body['priceData'] ?? null, $payload['priceData'])) {
+            if (!self::matches_price_data($body['priceData'] ?? null, $payload['priceData'])) {
                 return false;
             }
         }
@@ -1527,7 +1530,7 @@ class WSS_Product_Sync
         }
         if (
             isset($expected['priceData']) &&
-            !self::matches_array_fields($actual['priceData'] ?? null, $expected['priceData'])
+            !self::matches_price_data($actual['priceData'] ?? null, $expected['priceData'])
         ) {
             WSS_Logger::log(
                 'shopier-api',
@@ -1630,16 +1633,33 @@ class WSS_Product_Sync
         return true;
     }
 
+    private static function matches_price_data($actual, $expected)
+    {
+        if (!is_array($actual) || !is_array($expected)) {
+            return false;
+        }
+
+        // Shopier may omit the discount flag when it is false.
+        if (
+            array_key_exists('discount', $expected) &&
+            $expected['discount'] === false &&
+            !array_key_exists('discount', $actual)
+        ) {
+            unset($expected['discount']);
+        }
+
+        return self::matches_array_fields($actual, $expected);
+    }
+
     private static function matches_array_fields($actual, $expected)
     {
         if (!is_array($actual) || !is_array($expected)) {
             return false;
         }
         foreach ($expected as $key => $value) {
-            // Skip read-only fields that Shopier doesn't return or returns at different level
-            // vatPercent: read-only validation field
-            // shippingPrice: in variants, Shopier returns at root level only (not in variant priceData)
-            if (in_array($key, ['vatPercent', 'shippingPrice'], true)) {
+            // Shopier does not return vatPercent. shippingPrice is verified where sent:
+            // at root priceData for a variable product, never in variant priceData.
+            if ($key === 'vatPercent') {
                 continue;
             }
             

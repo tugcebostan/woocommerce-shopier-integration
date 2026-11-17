@@ -17,7 +17,7 @@ class WSS_Queue
     {
         add_filter('cron_schedules', [self::class, 'register_schedule']);
         add_action('init', [self::class, 'schedule_worker']);
-        add_action('wss_process_queue', [self::class, 'process_pending_jobs']);
+        add_action('wss_process_queue', [self::class, 'process_pending_jobs'], 10, 1);
     }
 
     public static function register_schedule($schedules)
@@ -271,12 +271,12 @@ class WSS_Queue
         }
 
         self::release_write_lock();
-        wp_schedule_single_event(time() + 5, 'wss_process_queue');
+        wp_schedule_single_event(time() + 5, 'wss_process_queue', [$job_id]);
 
         return $job_id;
     }
 
-    public static function process_pending_jobs()
+    public static function process_pending_jobs($scheduled_job_id = 0)
     {
         global $wpdb;
 
@@ -304,7 +304,10 @@ class WSS_Queue
             ARRAY_A
         );
 
-        if (!$job) {
+        if (!$job || (
+            absint($scheduled_job_id) > 0 &&
+            (int) $job['id'] !== absint($scheduled_job_id)
+        )) {
             self::release_write_lock();
             return;
         }
@@ -341,89 +344,60 @@ class WSS_Queue
             );
         }
 
-        // Find next pending batch
-        $first_pending = $wpdb->get_row(
+        // Claim and process one product per worker request to bound request time.
+        $item = $wpdb->get_row(
             $wpdb->prepare(
-                "SELECT batch_id
+                "SELECT *
                 FROM `{$items_table}`
                 WHERE job_id = %d AND status = 'pending'
-                ORDER BY batch_id ASC, id ASC
+                ORDER BY id ASC
                 LIMIT 1",
                 $job_id
             ),
             ARRAY_A
         );
 
-        if (!$first_pending) {
+        if (!$item) {
             self::finish_job_if_complete($job_id);
             self::release_write_lock();
             return;
         }
 
-        $batch_id = (int) $first_pending['batch_id'];
-        // Get all pending items in this batch
-        $batch_items = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT *
-                FROM `{$items_table}`
-                WHERE job_id = %d AND batch_id = %d AND status = 'pending'
-                ORDER BY id ASC",
-                $job_id,
-                $batch_id
-            ),
-            ARRAY_A
-        );
-
-        if (empty($batch_items)) {
-            self::finish_job_if_complete($job_id);
-            self::release_write_lock();
-            return;
-        }
-
-        // Mark all items in batch as processing
-        $item_ids = array_map(function ($item) {
-            return (int) $item['id'];
-        }, $batch_items);
-        
-        $placeholders = implode(',', array_fill(0, count($item_ids), '%d'));
-        $wpdb->query(
+        $item_id = (int) $item['id'];
+        $claimed = $wpdb->query(
             $wpdb->prepare(
                 "UPDATE `{$items_table}`
                 SET status = 'processing', attempts = attempts + 1, updated_at = %s
-                WHERE id IN ({$placeholders})",
-                array_merge([$now], $item_ids)
+                WHERE id = %d AND job_id = %d AND status = 'pending'",
+                $now,
+                $item_id,
+                $job_id
             )
         );
+        if ($claimed !== 1) {
+            self::release_write_lock();
+            return;
+        }
 
-        // Process all items in batch with small delay between them (rate limiting)
-        foreach ($batch_items as $item) {
-            $item_id = (int) $item['id'];
-            $result = self::run_job_item($job, $item);
-            $message = is_wp_error($result)
-                ? $result->get_error_message()
-                : (string) ($result['message'] ?? 'Completed.');
-            if (is_wp_error($result)) {
-                $error_data = $result->get_error_data();
-                if (is_array($error_data) && !empty($error_data['shopier_product_id'])) {
-                    $message .= ' Shopier product ID: ' . sanitize_text_field(
-                        (string) $error_data['shopier_product_id']
-                    ) . '.';
-                }
-            }
-
-            self::finish_item($job_id, $item_id, !is_wp_error($result), $message);
-            
-            // Rate limiting: 200ms delay between items in batch (gives ~5 req/sec max)
-            if ($item_id !== end($item_ids)) {
-                usleep(200000);
+        $result = self::run_job_item($job, $item);
+        $message = is_wp_error($result)
+            ? $result->get_error_message()
+            : (string) ($result['message'] ?? 'Completed.');
+        if (is_wp_error($result)) {
+            $error_data = $result->get_error_data();
+            if (is_array($error_data) && !empty($error_data['shopier_product_id'])) {
+                $message .= ' Shopier product ID: ' . sanitize_text_field(
+                    (string) $error_data['shopier_product_id']
+                ) . '.';
             }
         }
 
+        self::finish_item($job_id, $item_id, !is_wp_error($result), $message);
         self::finish_job_if_complete($job_id);
         self::release_write_lock();
 
         if (self::has_active_write_job()) {
-            wp_schedule_single_event(time() + 5, 'wss_process_queue');
+            wp_schedule_single_event(time() + 5, 'wss_process_queue', [$job_id]);
         }
     }
 
@@ -464,16 +438,75 @@ class WSS_Queue
                 );
 
             case 'product_create':
+                $product_shipping_payer = get_post_meta($product_id, '_wss_shopier_shipping_payer', true);
+                if (!in_array($product_shipping_payer, ['sellerPays', 'buyerPays'], true)) {
+                    $product_shipping_payer = $job_data['shipping_payer'] ?? 'sellerPays';
+                }
+                $next_placement_score = absint($job_data['next_placement_score'] ?? 0);
+                if ($next_placement_score < 2) {
+                    $score_result = WSS_Shopier_API::get_next_placement_score();
+                    if (empty($score_result['success'])) {
+                        $details = WSS_Shopier_API::get_error_summary(
+                            $score_result['body'] ?? null,
+                            $score_result['message'] ?? ''
+                        );
+                        return new WP_Error(
+                            'wss_shopier_placement_score_unavailable',
+                            'Shopier sıralama puanı alınamadı.'
+                                . ($details !== '' ? ' ' . $details : '')
+                        );
+                    }
+                    $next_placement_score = absint($score_result['placement_score'] ?? 0);
+                }
+                if ($next_placement_score < 2 || $next_placement_score >= PHP_INT_MAX) {
+                    return new WP_Error(
+                        'wss_shopier_placement_score_invalid',
+                        'Shopier için yeni bir sıralama puanı güvenle ayrılamadı.'
+                    );
+                }
+
+                // Reserve the next score before the remote create request so an interrupted
+                // request cannot reuse a score if Shopier completed the create.
+                $job_data['next_placement_score'] = $next_placement_score + 1;
+                if (!self::save_job_data((int) $job['id'], $job_data)) {
+                    return new WP_Error(
+                        'wss_job_data_save_failed',
+                        'Ürün oluşturma sıralama bilgisi kuyruğa kaydedilemedi.'
+                    );
+                }
+
                 return self::normalize_result(
                     WSS_Product_Sync::create_product(
                         $product_id,
-                        (string) ($job_data['shipping_payer'] ?? '')
+                        (string) $product_shipping_payer,
+                        $next_placement_score
                     ),
                     'wss_product_create_failed'
                 );
         }
 
         return new WP_Error('wss_job_type_invalid', 'The product job type is not supported.');
+    }
+
+    private static function save_job_data($job_id, $job_data)
+    {
+        global $wpdb;
+
+        $encoded_data = wp_json_encode($job_data);
+        if ($encoded_data === false) {
+            return false;
+        }
+
+        return $wpdb->update(
+            $wpdb->prefix . 'wss_sync_jobs',
+            [
+                'job_data' => $encoded_data,
+                'updated_at' => current_time('mysql'),
+            ],
+            ['id' => absint($job_id)],
+            ['%s', '%s'],
+            ['%d']
+        ) !== false;
     }
 
     private static function normalize_result($result, $error_code)

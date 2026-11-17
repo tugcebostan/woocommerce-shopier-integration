@@ -175,7 +175,7 @@ class WSS_Database
         ) {
             return;
         }
-        
+
         update_option('wss_db_version', self::SCHEMA_VERSION);
     }
 

@@ -11,21 +11,56 @@ class WSS_Shopier_API
      */
     public static function get_client_id()
     {
+        $option = get_option('wss_shopier_client_id', '');
+        if ($option !== '') {
+            return (string) $option;
+        }
         return defined('SHOPIER_CLIENT_ID') ? constant('SHOPIER_CLIENT_ID') : '';
     }
 
     public static function get_client_secret()
     {
-        return defined('SHOPIER_CLIENT_SECRET') ? constant('SHOPIER_CLIENT_SECRET') : '';
+        $option = get_option('wss_shopier_client_secret', '');
+        if ($option !== '') {
+            return (string) $option;
+        }
+        foreach (['SHOPIER_CLIENT_SECRET', 'SHOPIER_API_SECRET', 'SHOPIER_SECRET_KEY'] as $constant_name) {
+            if (defined($constant_name) && constant($constant_name) !== '') {
+                return (string) constant($constant_name);
+            }
+        }
+        return '';
     }
 
-    public static function get_webhook_token()
+    public static function get_webhook_token($event = '')
     {
+        $event = sanitize_key((string) $event);
+        $tokens = get_option('wss_shopier_webhook_tokens', []);
+        if ($event !== '' && is_array($tokens) && !empty($tokens[$event])) {
+            return (string) $tokens[$event];
+        }
+        if ($event === 'product.updated') {
+            $product_token = get_option('wss_shopier_webhook_product_updated_token', '');
+            if ($product_token !== '') {
+                return (string) $product_token;
+            }
+            if (defined('SHOPIER_WEBHOOK_PRODUCT_UPDATED_TOKEN') && constant('SHOPIER_WEBHOOK_PRODUCT_UPDATED_TOKEN') !== '') {
+                return (string) constant('SHOPIER_WEBHOOK_PRODUCT_UPDATED_TOKEN');
+            }
+        }
+        $option = get_option('wss_shopier_webhook_token', '');
+        if ($option !== '') {
+            return (string) $option;
+        }
         return defined('SHOPIER_WEBHOOK_TOKEN') ? constant('SHOPIER_WEBHOOK_TOKEN') : '';
     }
 
     public static function get_base_url()
     {
+        $option = get_option('wss_shopier_api_base_url', '');
+        if ($option !== '') {
+            return untrailingslashit($option);
+        }
         if (defined('SHOPIER_API_BASE_URL') && constant('SHOPIER_API_BASE_URL')) {
             return rtrim(constant('SHOPIER_API_BASE_URL'), '/');
         }
@@ -35,6 +70,10 @@ class WSS_Shopier_API
 
     public static function get_token_url()
     {
+        $option = get_option('wss_shopier_token_url', '');
+        if ($option !== '') {
+            return $option;
+        }
         if (defined('SHOPIER_TOKEN_URL') && constant('SHOPIER_TOKEN_URL')) {
             return constant('SHOPIER_TOKEN_URL');
         }
@@ -42,22 +81,31 @@ class WSS_Shopier_API
         return 'https://api.shopier.com:8443/v1/oauth2/token';
     }
 
-    private static function get_access_token()
+    public static function get_pat()
     {
-        $pat = '';
+        $pat = trim((string) get_option('wss_shopier_pat', ''));
 
-        foreach (['SHOPIER_API_KEY', 'SHOPIER_PAT', 'SHOPIER_BEARER_TOKEN'] as $constant_name) {
-            if (defined($constant_name) && constant($constant_name)) {
-                $pat = trim((string) constant($constant_name));
-                break;
+        if ($pat === '') {
+            foreach (['SHOPIER_API_KEY', 'SHOPIER_PAT', 'SHOPIER_BEARER_TOKEN'] as $constant_name) {
+                if (defined($constant_name) && constant($constant_name)) {
+                    $pat = trim((string) constant($constant_name));
+                    break;
+                }
             }
         }
 
         if (!empty($pat)) {
-            return [
-                'success' => true,
-                'token' => self::normalize_token($pat),
-            ];
+            return self::normalize_token($pat);
+        }
+
+        return '';
+    }
+
+    private static function get_access_token()
+    {
+        $pat = self::get_pat();
+        if ($pat !== '') {
+            return ['success' => true, 'token' => $pat];
         }
 
         $oauth_token = get_option('wss_shopier_access_token', '');
@@ -422,10 +470,136 @@ class WSS_Shopier_API
             }
         }
 
+        $products = array_values($products);
+        usort($products, static function ($left, $right) {
+            $title_order = strnatcasecmp((string) ($left['title'] ?? ''), (string) ($right['title'] ?? ''));
+            return $title_order !== 0
+                ? $title_order
+                : strnatcasecmp((string) ($left['id'] ?? ''), (string) ($right['id'] ?? ''));
+        });
+
         return [
             'success' => true,
-            'body' => array_values($products),
+            'body' => $products,
         ];
+    }
+
+    /** Fetch one paginated Shopier orders page for the admin Orders tab. */
+    public static function get_orders_page($page = 1, $limit = 25)
+    {
+        $page = max(1, absint($page));
+        $limit = in_array(absint($limit), [10, 25, 50, 100], true) ? absint($limit) : 25;
+        $response = self::request(
+            'GET',
+            add_query_arg(['limit' => $limit, 'page' => $page], '/orders')
+        );
+        if (empty($response['success'])) {
+            return $response;
+        }
+
+        $body = $response['body'] ?? null;
+        if (!is_array($body)) {
+            return ['success' => false, 'status' => absint($response['status'] ?? 0), 'message' => 'Shopier returned an invalid orders response.'];
+        }
+        $total = null;
+        foreach (['totalCount', 'total'] as $total_key) {
+            if (isset($body[$total_key]) && is_numeric($body[$total_key])) {
+                $total = absint($body[$total_key]);
+                break;
+            }
+        }
+        if (isset($body['pagination']) && is_array($body['pagination']) && isset($body['pagination']['total']) && is_numeric($body['pagination']['total'])) {
+            $total = absint($body['pagination']['total']);
+        }
+        foreach (['orders', 'data', 'results'] as $collection_key) {
+            if (isset($body[$collection_key]) && is_array($body[$collection_key])) {
+                $body = $body[$collection_key];
+                break;
+            }
+        }
+        if (isset($body['id'])) {
+            $body = [$body];
+        }
+        $orders = [];
+        foreach ($body as $order) {
+            if (!is_array($order) || !isset($order['id']) || !is_scalar($order['id'])) {
+                return ['success' => false, 'status' => absint($response['status'] ?? 0), 'message' => 'Shopier returned an invalid order record.'];
+            }
+            $order_id = trim((string) $order['id']);
+            if ($order_id !== '' && strlen($order_id) <= 100) {
+                $order['id'] = $order_id;
+                $orders[] = $order;
+            }
+        }
+        usort($orders, static function ($left, $right) {
+            return (strtotime((string) ($right['dateCreated'] ?? '')) ?: 0) <=> (strtotime((string) ($left['dateCreated'] ?? '')) ?: 0);
+        });
+        return ['success' => true, 'body' => [
+            'orders' => $orders,
+            'has_more' => $total !== null ? ($page * $limit < $total) : count($orders) >= $limit,
+            'total_count' => $total,
+        ]];
+    }
+
+    /** Fetch one filtered Shopier shipments page. */
+    public static function get_shippings_page($page = 1, $limit = 25, $filters = [])
+    {
+        $page = max(1, absint($page));
+        $limit = in_array(absint($limit), [10, 25, 50], true) ? absint($limit) : 25;
+        $query = ['page' => $page, 'limit' => $limit];
+        $allowed_filters = [
+            'status' => ['shipped', 'notShipped'],
+            'type' => ['firstShipment', 'secondShipment', 'returnShipment'],
+            'company' => ['yurtici', 'mng', 'ptt'],
+        ];
+        foreach ($allowed_filters as $name => $allowed_values) {
+            if (isset($filters[$name]) && in_array($filters[$name], $allowed_values, true)) {
+                $query[$name] = $filters[$name];
+            }
+        }
+        foreach (['dateCreatedStart', 'dateCreatedEnd'] as $date_key) {
+            if (!empty($filters[$date_key]) && preg_match('/\A\d{4}-\d{2}-\d{2}\z/', $filters[$date_key])) {
+                $query[$date_key] = $filters[$date_key];
+            }
+        }
+        $response = self::request('GET', add_query_arg($query, '/shippings'));
+        if (empty($response['success'])) {
+            return $response;
+        }
+        $body = $response['body'] ?? null;
+        if (!is_array($body)) {
+            return ['success' => false, 'status' => absint($response['status'] ?? 0), 'message' => 'Shopier returned an invalid shippings response.'];
+        }
+        $total = null;
+        foreach (['totalCount', 'total'] as $total_key) {
+            if (isset($body[$total_key]) && is_numeric($body[$total_key])) {
+                $total = absint($body[$total_key]);
+                break;
+            }
+        }
+        if (isset($body['pagination']) && is_array($body['pagination']) && isset($body['pagination']['total']) && is_numeric($body['pagination']['total'])) {
+            $total = absint($body['pagination']['total']);
+        }
+        foreach (['shippings', 'data', 'results'] as $collection_key) {
+            if (isset($body[$collection_key]) && is_array($body[$collection_key])) {
+                $body = $body[$collection_key];
+                break;
+            }
+        }
+        if (isset($body['orderId']) || isset($body['code'])) {
+            $body = [$body];
+        }
+        $shippings = [];
+        foreach ($body as $shipping) {
+            if (is_array($shipping)) {
+                $shippings[] = $shipping;
+            }
+        }
+        return ['success' => true, 'body' => [
+            'shippings' => $shippings,
+            'has_more' => $total !== null ? ($page * $limit < $total) : count($shippings) >= $limit,
+            'total_count' => $total,
+        ]];
     }
 
     public static function get_next_placement_score()

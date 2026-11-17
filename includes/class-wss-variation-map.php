@@ -287,6 +287,7 @@ class WSS_Variation_Map
                         vm.selection_signature,
                         a.id AS attribute_map_id,
                         a.shopier_group_id,
+                        a.shopier_group_title,
                         a.shopier_selection_id,
                         a.wc_scope_id,
                         a.wc_attribute,

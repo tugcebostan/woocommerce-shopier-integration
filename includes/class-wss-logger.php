@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) {
 
 class WSS_Logger
 {
+    private const MAX_LOG_BYTES = 10485760;
+
     private static function prune_old_logs()
     {
         if (get_transient('wss_log_retention_last_run')) {
@@ -34,15 +36,13 @@ class WSS_Logger
                 continue;
             }
 
-            $handle = fopen($filename, 'c+');
+            $handle = @fopen($filename, 'c+');
             if ($handle === false) {
-                error_log('[WSS] Could not open a log file for retention cleanup.');
-                return;
+                continue;
             }
             if (!flock($handle, LOCK_EX)) {
                 fclose($handle);
-                error_log('[WSS] Could not lock a log file for retention cleanup.');
-                return;
+                continue;
             }
 
             rewind($handle);
@@ -50,8 +50,7 @@ class WSS_Logger
             if (!is_string($contents)) {
                 flock($handle, LOCK_UN);
                 fclose($handle);
-                error_log('[WSS] Could not read a log file for retention cleanup.');
-                return;
+                continue;
             }
 
             $kept_lines = [];
@@ -75,8 +74,7 @@ class WSS_Logger
             if (!ftruncate($handle, 0) || fseek($handle, 0) !== 0) {
                 flock($handle, LOCK_UN);
                 fclose($handle);
-                error_log('[WSS] Could not truncate a log file during retention cleanup.');
-                return;
+                continue;
             }
             $written_total = 0;
             $updated_length = strlen($updated_contents);
@@ -85,8 +83,7 @@ class WSS_Logger
                 if ($written === false || $written === 0) {
                     flock($handle, LOCK_UN);
                     fclose($handle);
-                    error_log('[WSS] Could not rewrite a log file during retention cleanup.');
-                    return;
+                    continue 2;
                 }
                 $written_total += $written;
             }
@@ -95,7 +92,87 @@ class WSS_Logger
             fclose($handle);
         }
 
-        set_transient('wss_log_retention_last_run', time(), DAY_IN_SECONDS);
+        $files = glob($directory . '*-????-??.log');
+        if ($files === false) {
+            error_log('[WSS] Could not enumerate log files for size cleanup.');
+            return;
+        }
+
+        $total_bytes = 0;
+        foreach ($files as $filename) {
+            $size = filesize($filename);
+            if ($size === false) {
+                continue;
+            }
+            if ($size > self::MAX_LOG_BYTES) {
+                self::trim_log_file($filename, self::MAX_LOG_BYTES);
+                $size = filesize($filename);
+            }
+            $total_bytes += $size === false ? 0 : $size;
+        }
+
+        if ($total_bytes > self::MAX_LOG_BYTES) {
+            usort($files, static function ($left, $right) {
+                return (filemtime($left) ?: 0) <=> (filemtime($right) ?: 0);
+            });
+
+            foreach ($files as $filename) {
+                if ($total_bytes <= self::MAX_LOG_BYTES) {
+                    break;
+                }
+                $size = filesize($filename);
+                if ($size === false || $size === 0) {
+                    continue;
+                }
+                $bytes_to_remove = $total_bytes - self::MAX_LOG_BYTES;
+                if ($size <= $bytes_to_remove) {
+                    if (unlink($filename)) {
+                        $total_bytes -= $size;
+                    }
+                    continue;
+                }
+
+                self::trim_log_file($filename, $size - $bytes_to_remove);
+                $new_size = filesize($filename);
+                if ($new_size !== false) {
+                    $total_bytes += $new_size - $size;
+                }
+            }
+        }
+
+        set_transient('wss_log_retention_last_run', time(), HOUR_IN_SECONDS);
+    }
+
+    private static function trim_log_file($filename, $max_bytes)
+    {
+        $handle = @fopen($filename, 'c+');
+        if ($handle === false || !flock($handle, LOCK_EX)) {
+            if ($handle !== false) {
+                fclose($handle);
+            }
+            return false;
+        }
+
+        $size = filesize($filename);
+        if ($size === false || $size <= $max_bytes) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            return true;
+        }
+
+        fseek($handle, $size - $max_bytes);
+        fgets($handle);
+        $contents = stream_get_contents($handle);
+        if (!is_string($contents) || !ftruncate($handle, 0) || fseek($handle, 0) !== 0) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            return false;
+        }
+
+        $written = fwrite($handle, $contents);
+        flock($handle, LOCK_UN);
+        fclose($handle);
+        return $written !== false;
     }
 
     public static function get_recent_logs($limit = 200)
@@ -121,7 +198,7 @@ class WSS_Logger
             if (strpos(basename($filename), 'errors-') === 0) {
                 continue;
             }
-            $handle = fopen($filename, 'rb');
+            $handle = @fopen($filename, 'rb');
             if ($handle === false) {
                 continue;
             }
@@ -214,6 +291,10 @@ class WSS_Logger
         self::prune_old_logs();
         $module = sanitize_key($module);
         $level  = strtoupper(sanitize_key($level));
+
+        if ($level === 'DEBUG') {
+            return true;
+        }
 
         $directory = self::get_log_directory();
 
@@ -331,20 +412,6 @@ class WSS_Logger
             $json . PHP_EOL,
             FILE_APPEND | LOCK_EX
         );
-
-        // All errors are also written to the central error log.
-        if (in_array($level, ['ERROR', 'CRITICAL', 'ALERT', 'EMERGENCY'], true)) {
-            $error_file = $directory
-                . 'errors-'
-                . current_time('Y-m')
-                . '.log';
-
-            file_put_contents(
-                $error_file,
-                $json . PHP_EOL,
-                FILE_APPEND | LOCK_EX
-            );
-        }
 
         return $written !== false;
     }
