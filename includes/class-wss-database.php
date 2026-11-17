@@ -33,19 +33,21 @@ class WSS_Database
 
         $tables = [];
 
+        // Canonical 1.4.0 schema. Keep sync_jobs at index 3 for migrate_to_130($tables[3]).
         $tables[] = "CREATE TABLE {$prefix}attribute_map (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-            shopier_variation_id varchar(100) NOT NULL,
+            shopier_group_id varchar(100) NOT NULL,
+            shopier_group_title varchar(255) NOT NULL,
             shopier_selection_id varchar(100) NOT NULL,
-            shopier_variation_title varchar(255) NOT NULL,
             shopier_selection_title varchar(255) NOT NULL,
+            wc_scope_id bigint(20) unsigned NOT NULL DEFAULT 0,
             wc_attribute varchar(100) NOT NULL,
-            wc_term_slug varchar(200) NOT NULL,
+            wc_value varchar(200) NOT NULL,
             created_at datetime NOT NULL,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
-            UNIQUE KEY shopier_selection (shopier_variation_id,shopier_selection_id),
-            KEY wc_attribute_term (wc_attribute,wc_term_slug)
+            UNIQUE KEY shopier_selection_scope (shopier_group_id,shopier_selection_id,wc_scope_id),
+            UNIQUE KEY wc_value_group (wc_scope_id,wc_attribute,wc_value,shopier_group_id)
         ) $charset_collate;";
 
         $tables[] = "CREATE TABLE {$prefix}product_map (
@@ -67,14 +69,14 @@ class WSS_Database
             wc_product_id bigint(20) unsigned NOT NULL,
             wc_variation_id bigint(20) unsigned NOT NULL,
             shopier_product_id varchar(100) NOT NULL,
-            selection_key varchar(500) NOT NULL,
+            selection_signature char(64) NOT NULL DEFAULT '',
             sync_status varchar(30) NOT NULL DEFAULT 'active',
             last_synced_at datetime DEFAULT NULL,
             created_at datetime NOT NULL,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
             UNIQUE KEY wc_variation_id (wc_variation_id),
-            UNIQUE KEY shopier_combination (shopier_product_id,selection_key),
+            UNIQUE KEY shopier_selection_signature (shopier_product_id,selection_signature),
             KEY wc_product_id (wc_product_id)
         ) $charset_collate;";
 
@@ -99,6 +101,7 @@ class WSS_Database
         $tables[] = "CREATE TABLE {$prefix}sync_job_items (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             job_id bigint(20) unsigned NOT NULL,
+            batch_id int(10) unsigned NOT NULL DEFAULT 0,
             wc_product_id bigint(20) unsigned NOT NULL,
             status varchar(30) NOT NULL DEFAULT 'pending',
             attempts int(10) unsigned NOT NULL DEFAULT 0,
@@ -141,6 +144,16 @@ class WSS_Database
             PRIMARY KEY  (id),
             UNIQUE KEY shopier_order_id (shopier_order_id),
             UNIQUE KEY wc_order_id (wc_order_id)
+        ) $charset_collate;";
+
+        $tables[] = "CREATE TABLE {$prefix}variation_map_items (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            variation_map_id bigint(20) unsigned NOT NULL,
+            attribute_map_id bigint(20) unsigned NOT NULL,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY variation_attribute (variation_map_id,attribute_map_id),
+            KEY attribute_map_id (attribute_map_id)
         ) $charset_collate;";
 
         $installed_version = get_option('wss_db_version', '0');
