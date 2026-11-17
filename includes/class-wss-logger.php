@@ -148,29 +148,35 @@ class WSS_Logger
     private static function remove_legacy_public_logs()
     {
         $upload_dir = wp_upload_dir();
-        $legacy_log_directory = trailingslashit($upload_dir['basedir'])
-            . 'woo-shopier-sync-uploads/logs/';
+        $legacy_root = trailingslashit($upload_dir['basedir']) . 'woo-shopier-sync-uploads';
+        $legacy_log_directory = trailingslashit($legacy_root) . 'logs';
 
-        if (!is_dir($legacy_log_directory) || is_link(rtrim($legacy_log_directory, '/'))) {
+        if (is_link($legacy_root) || is_link($legacy_log_directory)) {
             return;
         }
 
-        $files = glob($legacy_log_directory . '*-????-??.log');
-        if (is_array($files)) {
-            foreach ($files as $filename) {
-                if (
-                    is_file($filename) &&
-                    preg_match('/\A[a-z0-9_-]+-\d{4}-\d{2}\.log\z/i', basename($filename))
-                ) {
-                    @unlink($filename);
+        if (is_dir($legacy_log_directory)) {
+            $files = glob(trailingslashit($legacy_log_directory) . '*-????-??.log');
+            if (is_array($files)) {
+                foreach ($files as $filename) {
+                    if (
+                        is_file($filename) &&
+                        preg_match('/\A[a-z0-9_-]+-\d{4}-\d{2}\.log\z/i', basename($filename))
+                    ) {
+                        @unlink($filename);
+                    }
                 }
             }
+            @unlink(trailingslashit($legacy_log_directory) . 'index.php');
+            @unlink(trailingslashit($legacy_log_directory) . '.htaccess');
+            @rmdir($legacy_log_directory);
         }
 
-        @unlink(dirname($legacy_log_directory) . '/.htaccess');
-        @unlink(dirname($legacy_log_directory) . '/index.php');
-        @rmdir(rtrim($legacy_log_directory, '/'));
-        @rmdir(dirname($legacy_log_directory));
+        if (is_dir($legacy_root)) {
+            @unlink(trailingslashit($legacy_root) . '.htaccess');
+            @unlink(trailingslashit($legacy_root) . 'index.php');
+            @rmdir($legacy_root);
+        }
     }
 
     private static function trim_log_file($filename, $max_bytes)
